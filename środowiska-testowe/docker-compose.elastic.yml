@@ -1,69 +1,65 @@
 services:
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:9.2.4
-    container_name: elasticsearch
-    hostname: elasticsearch
+    container_name: sbom-es01
+    hostname: es01
     environment:
-      - TZ=Europe/Warsaw
-      - discovery.type=single-node
-      - cluster.name=sbom-cluster
-      - node.name=es01
+      TZ: Europe/Warsaw
+      discovery.type: single-node
+      cluster.name: sbom-cluster
+      node.name: es01
 
-      # PoC: wyłączamy security, żeby Jenkins mógł wrzucać eventy przez HTTP bez certów i userów
-      - xpack.security.enabled=false
+      # PoC: bez security (PROD: TLS + API keys)
+      xpack.security.enabled: "false"
 
-      # sensowna pamięć dla kontenera (dopasuj do hosta)
-      - ES_JAVA_OPTS=-Xms1g -Xmx1g
+      bootstrap.memory_lock: "true"
+      ES_JAVA_OPTS: "-Xms1g -Xmx1g"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
     ports:
-      - "9200:9200"   # Elasticsearch HTTP
-      - "9300:9300"   # transport (opcjonalnie)
+      - "9200:9200"
+      - "9300:9300"
     volumes:
       - es_data:/usr/share/elasticsearch/data
-    healthcheck:
-      test: ["CMD", "bash", "-lc", "curl -fsS http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=2s | grep -q '\"status\"'"]
-      interval: 20s
-      timeout: 10s
-      retries: 30
-      start_period: 60s
     restart: unless-stopped
 
   kibana:
     image: docker.elastic.co/kibana/kibana:9.2.4
-    container_name: kibana
+    container_name: sbom-kibana
     hostname: kibana
     environment:
-      - TZ=Europe/Warsaw
-      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
-      - xpack.security.enabled=false
+      TZ: Europe/Warsaw
+      ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
+      xpack.security.enabled: "false"
     ports:
-      - "5601:5601"   # Kibana UI
+      - "5601:5601"
     depends_on:
-      elasticsearch:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "bash", "-lc", "curl -fsS http://localhost:5601/api/status | grep -q '\"level\":\"available\"'"]
-      interval: 20s
-      timeout: 10s
-      retries: 40
-      start_period: 120s
+      - elasticsearch
     restart: unless-stopped
 
-  # Minimalny „odpowiednik splunk-app”: zakłada pipeline + template pod indeks SBOM
   elastic_setup:
     image: curlimages/curl:8.10.1
-    container_name: elastic_setup
+    container_name: sbom-setup
     depends_on:
-      elasticsearch:
-        condition: service_healthy
+      - elasticsearch
     entrypoint: ["/bin/sh", "-lc"]
     command: |
-      set -e
+      set -eux
+      echo "SETUP START"
 
-      echo "Creating index template: sbom-template"
+      echo "Waiting for Elasticsearch HTTP..."
+      until curl -fsS http://elasticsearch:9200 >/dev/null; do sleep 2; done
+
+      echo "Waiting for cluster status..."
+      until curl -fsS "http://elasticsearch:9200/_cluster/health?wait_for_status=yellow&timeout=30s" >/dev/null; do sleep 2; done
+
+      echo "Creating index template: sbom-template (sbom-events-*)"
       curl -fsS -X PUT http://elasticsearch:9200/_index_template/sbom-template \
         -H 'Content-Type: application/json' \
         -d '{
-          "index_patterns": ["sbom-*"],
+          "index_patterns": ["sbom-events-*"],
           "template": {
             "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
             "mappings": {
@@ -75,7 +71,35 @@ services:
                 "vcs_ref":    { "type": "keyword" },
                 "owner_team": { "type": "keyword" },
                 "type":       { "type": "keyword" },
-                "source":     { "type": "keyword" }
+                "source":     { "type": "keyword" },
+                "build_id":   { "type": "keyword" },
+                "job":        { "type": "keyword" }
+              }
+            }
+          }
+        }'
+
+      echo "Creating index template: vuln-template (vuln-events-*)"
+      curl -fsS -X PUT http://elasticsearch:9200/_index_template/vuln-template \
+        -H 'Content-Type: application/json' \
+        -d '{
+          "index_patterns": ["vuln-events-*"],
+          "template": {
+            "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+            "mappings": {
+              "dynamic": true,
+              "properties": {
+                "@timestamp": { "type": "date" },
+                "app_id":     { "type": "keyword" },
+                "app_version":{ "type": "keyword" },
+                "vcs_ref":    { "type": "keyword" },
+                "owner_team": { "type": "keyword" },
+                "type":       { "type": "keyword" },
+                "source":     { "type": "keyword" },
+                "build_id":   { "type": "keyword" },
+                "job":        { "type": "keyword" },
+                "severity":   { "type": "keyword" },
+                "cve":        { "type": "keyword" }
               }
             }
           }
@@ -85,40 +109,48 @@ services:
       curl -fsS -X PUT http://elasticsearch:9200/_ingest/pipeline/sbom-normalize \
         -H 'Content-Type: application/json' \
         -d '{
-          "description": "Minimal normalization for SBOM events",
+          "description": "SBOM normalize",
           "processors": [
             { "set": { "field": "@timestamp", "value": "{{_ingest.timestamp}}" } }
           ]
         }'
 
-      echo "Done."
+      echo "Creating ingest pipeline: vuln-normalize"
+      curl -fsS -X PUT http://elasticsearch:9200/_ingest/pipeline/vuln-normalize \
+        -H 'Content-Type: application/json' \
+        -d '{
+          "description": "VULN normalize",
+          "processors": [
+            { "set": { "field": "@timestamp", "value": "{{_ingest.timestamp}}" } }
+          ]
+        }'
+
+      echo "Creating initial indexes (so Jenkins URLs always hit something)..."
+      curl -fsS -X PUT http://elasticsearch:9200/sbom-events-000001 >/dev/null || true
+      curl -fsS -X PUT http://elasticsearch:9200/vuln-events-000001 >/dev/null || true
+
+      echo "SETUP DONE"
     restart: "no"
 
   jenkins:
     image: jenkins/jenkins:lts-jdk17
-    container_name: jenkins
+    container_name: sbom-jenkins
     hostname: jenkins
     user: "0"
     environment:
-      - TZ=Europe/Warsaw
-
-      # Najprostszy ingest z Jenkins: POST JSON prosto do indeksu
-      # Uwaga: w realu zwykle idziesz w Elastic Agent / Logstash / API keys + TLS,
-      # ale tu trzymamy analogię do HEC i prostotę PoC.
-      - ELASTIC_INGEST_URL=http://elasticsearch:9200/sbom-events/_doc?pipeline=sbom-normalize
+      TZ: Europe/Warsaw
+      ELASTIC_SBOM_INGEST_URL: "http://elasticsearch:9200/sbom-events-000001/_doc?pipeline=sbom-normalize"
+      ELASTIC_VULN_INGEST_URL: "http://elasticsearch:9200/vuln-events-000001/_doc?pipeline=vuln-normalize"
     ports:
-      - "8080:8080"   # Jenkins UI
-      - "50000:50000" # inbound agents (opcjonalnie)
+      - "8080:8080"
+      - "50000:50000"
     volumes:
       - jenkins_home:/var/jenkins_home
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
-      elasticsearch:
-        condition: service_healthy
-      kibana:
-        condition: service_healthy
-      elastic_setup:
-        condition: service_completed_successfully
+      - elasticsearch
+      - kibana
+      - elastic_setup
     restart: unless-stopped
 
 volumes:
