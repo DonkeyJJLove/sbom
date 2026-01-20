@@ -1,7 +1,7 @@
 # Kryptologia informacyjna – SBOM
 
 <p align="center">
-  <img src="img/kryptologia-informacyjna-sbom.png" alt="Kryptologia informacyjna – SBOM" width="800"><br>
+  <img src="img\kryptologia-informacyjna-sbom.png" alt="Kryptologia informacyjna – SBOM" width="800"><br>
   <em>Rys. 1. Kryptologia informacyjna – SBOM</em>
 </p>
 
