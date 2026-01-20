@@ -1,0 +1,58 @@
+services:
+  splunk:
+    image: splunk/splunk:9.2.1
+    container_name: splunk
+    hostname: splunk
+    environment:
+      - SPLUNK_START_ARGS=--accept-license
+      - SPLUNK_PASSWORD=ChangeMe_Strong_Password_1!
+      - SPLUNK_LICENSE_URI=Free
+      - TZ=Europe/Warsaw
+
+      # Włączenie HEC (najprostsza ścieżka ingestu z Jenkins)
+      - SPLUNK_HEC_TOKEN=00000000-0000-0000-0000-000000000000
+      - SPLUNK_HEC_ENABLE=true
+      - SPLUNK_HEC_SSL=true
+      - SPLUNK_HEC_PORT=8088
+    ports:
+      - "8000:8000"   # Splunk Web
+      - "8088:8088"   # HEC
+      - "8089:8089"   # Mgmt (opcjonalnie; przy integracjach może się przydać)
+    volumes:
+      - splunk_etc:/opt/splunk/etc
+      - splunk_var:/opt/splunk/var
+      # Nasza minimalna "aplikacja" konfiguracyjna: indeksy + sourcetypy + TRUNCATE + JSON
+      - ./splunk-app-sbom:/opt/splunk/etc/apps/sbom_app:rw
+    healthcheck:
+      test: ["CMD", "bash", "-lc", "curl -ks https://localhost:8088/services/collector/health | grep -q healthy"]
+      interval: 20s
+      timeout: 10s
+      retries: 30
+      start_period: 180s
+    restart: unless-stopped
+
+  jenkins:
+    image: jenkins/jenkins:lts-jdk17
+    container_name: jenkins
+    hostname: jenkins
+    user: "0"
+    environment:
+      - TZ=Europe/Warsaw
+      # Ułatwienie: URL do Splunk HEC widoczny z sieci dockerowej
+      - SPLUNK_HEC_URL=https://splunk:8088/services/collector/event
+    ports:
+      - "8080:8080"   # Jenkins UI
+      - "50000:50000" # inbound agents (opcjonalnie)
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      # Pozwala Jenkinsowi odpalać kontenery (np. syft/grype) jako build steps
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      splunk:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  splunk_etc:
+  splunk_var:
+  jenkins_home:
