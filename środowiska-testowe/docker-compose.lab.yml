@@ -1,103 +1,132 @@
-# docker-compose.lab.yml  (ROOT repo)
-version: "3.9"
 name: sbom-lab
 
 x-aid-env: &aid-env
   AID_APP_ID: ${AID_APP_ID:-sbom}
-  AID_OWNER_TEAM: ${AID_OWNER_TEAM:-AKMF}
+  AID_OWNER_TEAM: ${AID_OWNER_TEAM:-K82M}
   AID_ENV: ${AID_ENV:-lab}
   AID_VCS_REF: ${AID_VCS_REF:-local}
   AID_APP_VERSION: ${AID_APP_VERSION:-0.0.0}
   AID_REPO: ${AID_REPO:-DonkeyJJLove/sbom}
-  SPLUNK_INDEX_SBOM: ${SPLUNK_INDEX_SBOM:-sbom}
+
+x-es-env: &es-env
+  discovery.type: single-node
+  xpack.security.enabled: "false"
+  xpack.security.enrollment.enabled: "false"
+  ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms1g -Xmx1g}
 
 services:
   portainer:
     image: portainer/portainer-ce:latest
     container_name: sbom-lab-portainer
-    ports: ["9000:9000"]
+    ports:
+      - "9000:9000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - portainer_data:/data
     restart: unless-stopped
     networks: [mgmt]
 
-  splunk:
-    image: splunk/splunk:latest
-    container_name: sbom-lab-splunk
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.12.2
+    container_name: sbom-lab-elasticsearch
     environment:
-      <<: *aid-env
-      SPLUNK_START_ARGS: "--accept-license"
-      SPLUNK_PASSWORD: "${SPLUNK_PASSWORD:-Changeme1!}"
-      SPLUNK_HEC_ENABLE: "1"
-      SPLUNK_HEC_TOKEN: "${SPLUNK_HEC_TOKEN:-11111111-1111-1111-1111-111111111111}"
+      <<: *es-env
     ports:
-      - "8000:8000"
-      - "8088:8088"
-      - "8089:8089"
+      - "9200:9200"
     volumes:
-      - splunk_etc:/opt/splunk/etc
-      - splunk_var:/opt/splunk/var
+      - es_data:/usr/share/elasticsearch/data
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile:  { soft: 65536, hard: 65536 }
     restart: unless-stopped
-    networks: [sec, mgmt]
+    networks: [mgmt, ci]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200 >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
 
-  jenkins:
-    build:
-      context: ./lab/jenkins
-      dockerfile: Dockerfile
-    container_name: sbom-lab-jenkins
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.12.2
+    container_name: sbom-lab-kibana
     environment:
-      <<: *aid-env
+      ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
     ports:
-      - "8080:8080"
-      - "50000:50000"
-    volumes:
-      - jenkins_home:/var/jenkins_home
-      - /var/run/docker.sock:/var/run/docker.sock
+      - "5601:5601"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
     restart: unless-stopped
-    networks: [ci, mgmt]
+    networks: [mgmt]
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:5601/api/status >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
 
-  toolbox1:
+  toolbox:
     build:
-      context: ./lab/toolbox
+      context: ../lab/toolbox
       dockerfile: Dockerfile
-    container_name: sbom-lab-toolbox1
+    image: sbom-lab/toolbox:latest
+    container_name: sbom-lab-toolbox
     command: ["bash","-lc","sleep infinity"]
     stdin_open: true
     tty: true
     environment:
       <<: *aid-env
-      SPLUNK_HEC_EVENT_URL: "http://splunk:8088/services/collector/event"
-      SPLUNK_HEC_TOKEN: "${SPLUNK_HEC_TOKEN:-11111111-1111-1111-1111-111111111111}"
+      ES_URL: "http://elasticsearch:9200"
+      ES_INDEX: ${ES_INDEX:-sbom-test}
     volumes:
+      # root repo do /repo (ważne: source=.. bo compose jest w środowiska-testowe/)
       - type: bind
-        source: .
+        source: ..
         target: /repo
+      # katalog wynikowy LAB
       - type: bind
-        source: ./lab/out
+        source: ./out
         target: /lab/out
+      # jeśli chcesz, żeby toolbox mógł uruchamiać docker (np. skanować obrazy)
       - /var/run/docker.sock:/var/run/docker.sock
-    networks: [ci, sec]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [ci, mgmt]
 
-  toolbox2:
-    extends: { service: toolbox1 }
-    container_name: sbom-lab-toolbox2
-
-  toolbox3:
-    extends: { service: toolbox1 }
-    container_name: sbom-lab-toolbox3
-
-  toolbox4:
-    extends: { service: toolbox1 }
-    container_name: sbom-lab-toolbox4
+  jenkins:
+    build:
+      context: ../lab/jenkins
+      dockerfile: Dockerfile
+    container_name: sbom-lab-jenkins
+    environment:
+      <<: *aid-env
+      ES_URL: "http://elasticsearch:9200"
+      ES_INDEX: ${ES_INDEX:-sbom-test}
+    ports:
+      - "8080:8080"
+      - "50000:50000"
+    volumes:
+      - jenkins_home:/var/jenkins_home
+      # docker socket, żeby Jenkins mógł robić docker run toolbox (najprościej)
+      - /var/run/docker.sock:/var/run/docker.sock
+      # root repo do /repo w Jenkinsie (żeby pipeline miał stałą ścieżkę)
+      - type: bind
+        source: ..
+        target: /repo
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      kibana:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [ci, mgmt]
 
 networks:
   mgmt: {}
   ci: {}
-  sec: {}
 
 volumes:
   portainer_data: {}
-  splunk_etc: {}
-  splunk_var: {}
   jenkins_home: {}
+  es_data: {}
