@@ -1,212 +1,303 @@
-# Środowiska testowe SBOM (Jenkins + Analiza)
+# Środowiska testowe — LAB do analizy SBOM (Jenkins + Elastic/Kibana + opcjonalnie Splunk)
 
-Ten katalog zawiera dwa równoległe środowiska testowe, które realizują ten sam cel operacyjny: Jenkins generuje i przekazuje markery stanu bytu oprogramowania (SBOM, metadane buildu, wyniki skanu podatności/licencji), a następnie dane trafiają do centralnej analityki, gdzie można je przeglądać, filtrować, agregować i zamieniać na decyzje procesowe. Różnica polega wyłącznie na technologii warstwy analitycznej: w wariancie pierwszym jest to Splunk, w wariancie drugim Elastic (Elasticsearch + Kibana).
+Ten katalog jest „poligonem” dla całego repo: tu uruchamiasz lokalne środowisko, podłączasz aplikację (repo/artefakt), generujesz SBOM, skanujesz podatności, liczysz delty zmian i oglądasz to w analityce tak, jak robi się to produkcyjnie: wieloperspektywowo (dev, AppSec, SOC, compliance, ops). Celem nie jest „ładny SBOM”, tylko sterowanie: pomiar → próg → akcja, gdzie SBOM jest pieczęcią relacji (*Sigillum Relationis*), a AID jest tożsamością bytu, która spina wszystko w czasie.
 
-W obu przypadkach nazwa pliku YAML musi być inna, żeby dało się utrzymywać oba warianty obok siebie w jednym katalogu bez konfliktów i bez „przypadkowego” odpalania nie tego środowiska.
+## Co dostajesz z tego LAB-u
 
-## Nazwy plików compose
+Po pierwszym uruchomieniu masz działający Elastic (API na 9200) i Kibana (UI na 5601) oraz widok w Discover, gdzie widzisz zdarzenia z `aid.*` (AID_CONTRACT) i `event_type`. To jest minimalna baza pod dalszą analizę: możesz już filtrować, agregować, budować dashboardy i alerty.
 
-Dla wariantu Splunk użyj pliku `docker-compose.splunk.yml`.
+Docelowo LAB ma obsłużyć trzy strumienie danych dla każdej aplikacji:
+SBOM (skład), SCAN (podatności/licencje), DELTA (zmiany pomiędzy kolejnymi stanami). Czwarty strumień to GATE (decyzja/progi i wyjątki).
 
-Dla wariantu Elastic użyj pliku `docker-compose.elastic.yml`.
+## Słownik pojęć w tym repo
 
-Dzięki temu wprost wskazujesz wariant w komendzie `docker compose -f …` i nie mieszasz konfiguracji, wolumenów oraz portów.
+SBOM to „odcisk relacji” artefaktu. Nie interesuje nas tylko to, co jest w środku, ale to, co z tego wynika: ryzyko, zgodność, dryf, trendy.
 
-## Wariant A: Splunk (on-prem PoC)
+AID_CONTRACT to minimalna tożsamość bytu. AID nie jest „dla ozdoby”. Jest kluczem korelacji i sterowania: bez niego SBOM/scan/delta są anonimowe, a proces nie jest sterowalny.
 
-Ten wariant uruchamia Splunk oraz Jenkins. Jenkins dostaje zmienną środowiskową z adresem HEC widocznym w sieci dockerowej i może wysyłać eventy bezpośrednio do Splunk HEC. Splunk ma włączony HEC i healthcheck sprawdzający endpoint kolektora, co pozwala Jenkinsowi startować dopiero wtedy, gdy Splunk jest gotowy.
+`event_type` jest prostym rozróżnieniem rodzaju obserwacji:
+`sbom` (skład), `scan` (podatności/licencje), `delta` (różnice), `gate` (decyzja).
 
-Jeżeli używasz przykładowego hasła i tokena HEC, traktuj to wyłącznie jako PoC do testów lokalnych i podmień wartości na własne w środowisku rzeczywistym.
+`@timestamp` to czas zdarzenia w UTC (Kibana używa go do filtrów czasu, trendów i alertów).
 
-Uruchomienie:
+## Standard danych (AID + koperta zdarzenia)
 
-```bash
-docker compose -f docker-compose.splunk.yml up -d --build
+W tym LAB-u każde zdarzenie ma stałą „kopertę”. Minimalnie:
+
+```json
+{
+  "@timestamp": "2026-01-25T19:13:49.574Z",
+  "event_type": "sbom",
+  "aid": {
+    "app_id": "sbom",
+    "owner_team": "K82M",
+    "env": "lab",
+    "vcs_ref": "local",
+    "app_version": "0.0.0",
+    "repo": "DonkeyJJLove/sbom"
+  },
+  "msg": "human-readable note",
+  "payload": { }
+}
 ````
 
-Dostęp:
+W Kibanie filtrujesz po `aid.*` i `event_type`, a `payload` trzymasz jako „materiał” (pełny SBOM, raport skanera, delta, decyzja gate) albo jako streszczenie (liczniki, top-N), zależnie od tego, jak ciężkie dane chcesz indeksować.
 
-```text
-Jenkins:    http://localhost:8080
-Splunk Web: http://localhost:8000
-HEC:        https://localhost:8088
+## Start LAB: Elastic + Kibana
+
+Uruchamiasz Elastic/Kibanę docker-compose (w tym katalogu). Jeżeli masz już klaster postawiony, ten krok pomiń.
+
+Po uruchomieniu pamiętaj o podstawie: port `9300` to transport klastra (nie HTTP), więc przeglądarka i curl „łamią protokół”. Do API używasz `9200`. Kibana jest zwykle na `5601`.
+
+Szybki test:
+
+```powershell
+Invoke-RestMethod http://localhost:9200
 ```
 
-## Wariant B: Elastic (Elasticsearch + Kibana) (on-prem PoC)
+Jeżeli dostajesz JSON z `cluster_name` i `version`, to jest OK.
 
-Ten wariant uruchamia Elasticsearch, Kibana oraz Jenkins. Jenkins dostaje zmienną środowiskową z adresem endpointu indeksowania w Elasticsearch i może wysyłać eventy przez HTTP wprost do indeksu, opcjonalnie przez ingest pipeline normalizujący.
+## Konfiguracja Kibany (żeby „widzisz dane”)
 
-W wersji PoC dla uproszczenia wyłączone jest bezpieczeństwo (security) w Elasticsearch i Kibana, żeby uniknąć narzutu konfiguracji certyfikatów i kluczy API. W środowisku realnym zwykle włączasz security, dodajesz TLS, a ingest prowadzisz przez Elastic Agent lub Logstash, ale tutaj trzymamy maksymalnie krótką ścieżkę testową.
+W Kibanie tworzysz Data View dla indeksów, które będziesz zasilał. Na start możesz mieć `sbom-test`, docelowo polecam wzorzec `sbom-*`.
 
-Uruchomienie:
+W Data View ustaw `@timestamp` jako pole czasu. Jeśli część zdarzeń jest bez czasu, twórz drugi Data View bez time field, ale docelowo trzymaj się `@timestamp` zawsze.
+
+W Discover filtruj np.:
+
+```kql
+aid.owner_team : "K82M" and event_type : "sbom"
+```
+
+Jeżeli nie widzisz pól po świeżym ingest, odśwież „field list” w Data View.
+
+## Podłączenie aplikacji: trzy praktyczne warianty
+
+W LAB masz trzy „realne” sposoby podpięcia aplikacji. Wybór zależy od tego, czy analizujesz kod, paczkę, czy obraz kontenera.
+
+Wariant A: obraz kontenera (najprostszy do SBOM i skanu). Budujesz image i skanujesz go.
+
+Wariant B: katalog repo (source SBOM). Generujesz SBOM z systemu plików repo.
+
+Wariant C: artefakt binarny (zip/jar/deb/msi). Generujesz SBOM z paczki.
+
+W każdym wariancie wynik sprowadza się do tego samego: powstaje `sbom.json`, powstaje `scan.json`, powstaje `delta.json`, a potem leci to do Elastic jako zdarzenia z AID.
+
+## Narzędzia (referencyjnie): Syft + Grype
+
+Syft generuje SBOM (np. CycloneDX JSON), Grype skanuje podatności. To jest minimalistyczny, powtarzalny duet.
+
+Przykłady (Linux/WSL lub agent Jenkins na Linux):
+
+SBOM dla obrazu:
 
 ```bash
-docker compose -f docker-compose.elastic.yml up -d --build
+syft myapp:1.2.3 -o cyclonedx-json > sbom.cdx.json
 ```
 
-Dostęp:
+Skan podatności na podstawie SBOM:
 
-```text
-Jenkins:       http://localhost:8080
-Kibana:        http://localhost:5601
-Elasticsearch: http://localhost:9200
+```bash
+grype sbom:sbom.cdx.json -o json > scan.grype.json
 ```
 
-## Zasada wspólna dla obu wariantów: „marker → analityka → decyzja”
+Jeżeli Twoje skany są offline lub w sieci restrykcyjnej, pamiętaj, że część skanerów potrzebuje aktualizacji bazy (to ma wpływ na czas i stabilność pipeline).
 
-Oba środowiska są zbudowane tak, aby testować ten sam mechanizm sterowania, tylko na innej technologii. Jenkins wytwarza marker (zdarzenie opisujące „byt” buildu i jego relacje, np. SBOM lub skrót wyników skanu), wysyła go do warstwy analitycznej, a warstwa analityczna umożliwia progi, korelacje i konsekwencje procesowe (alert, ticket, bramka w CI/CD). Zmienia się tylko transport i składnia narzędzia, a nie sens sterowania.
+## Ingest do Elastic: dwa poziomy ciężaru danych
 
-## Procesowa analiza software: flow analityczny SBOM
+To jest decyzja architektoniczna, która determinuje koszty i komfort analizy.
 
-Procesowa analiza software zaczyna się od przyjęcia, że pojedynczy build nie jest tylko „kompilacją”, ale zdarzeniem w łańcuchu produkcji. SBOM jest wtedy markerem relacji i kompozycji, a nie archiwum „listy bibliotek”. W praktyce budujesz strumień zdarzeń, w którym każdy etap dodaje kontekst, usuwa niejednoznaczność i umożliwia kolejne kroki automatyzacji. To daje dwa równoległe tryby pracy: tryb bieżący (reakcja i bramkowanie) oraz tryb historyczny (trend, regresja, audyt, dowód).
+Tryb S1 (pełny payload): indeksujesz pełne JSON-y SBOM i pełne raporty skanów. Najlepsze na małą skalę (LAB), najcięższe w produkcji.
 
-Flow analityczny można czytać jak prostą sekwencję, która jest asymetryczna i asynchroniczna. Asymetryczna, bo jeden węzeł (analityka) widzi wiele systemów budujących i porównuje je w jednym języku. Asynchroniczna, bo generacja (CI/CD) i interpretacja (analityka) nie muszą dziać się w tym samym czasie, a mimo to pozostają porównywalne, jeżeli trzymasz stabilny kontrakt pól i indeksowania.
+Tryb S2 (streszczenie + link): indeksujesz streszczenie (liczniki, top-y, meta) i link do pliku SBOM przechowywanego jako artefakt (np. w Jenkins artifacts lub repo artefaktów). Najlżejsze i najłatwiejsze do skalowania.
 
-Minimalny przepływ w PoC wygląda tak: Jenkins wytwarza artefakt i metadane (AID i kontekst buildu), generuje SBOM i wynik skanu, wysyła zdarzenie do centralnej analityki, analityka normalizuje zdarzenie do wspólnego schematu, zapisuje w indeksie, a następnie uruchamia zapytania, agregacje i reguły. Wynik reguły wraca do procesu jako sterowanie, czyli decyzja: przepuść, ostrzeż, wstrzymaj, utwórz ticket, wymuś upgrade zależności, zablokuj release.
+Tryb S3 (hybryda): pełny SBOM tylko dla wydań releasowanych (np. `env=prod` lub tag release), a dla pozostałych tylko streszczenia. To jest zwykle „złoty środek”.
 
-Optymalizacja w tym modelu nie polega na „dodaniu więcej danych”, tylko na kontroli kształtu zdarzeń i ich retencji. W praktyce optymalizujesz objętość (nie zawsze wysyłasz pełny SBOM, czasem tylko streszczenie i hash), koszt indeksowania (stabilne mapowania, proste typy, mało pól tekstowych), koszt korelacji (konsekwentne klucze: app_id, app_version, vcs_ref, build_id, job) oraz koszt decyzji (progi i reguły, które są deterministyczne i odwracalne). Ten sam model ma też charakter dowodowy (audyt), predykcyjny (trend i ryzyko w czasie), ekonomiczny (koszt zależności i podatności) oraz operacyjny (SLA reakcji, bramki, zgodność).
+W LAB możesz zacząć od S1 (bo chcesz eksplorować), a potem przejść na S3.
 
-## Runbook: bootstrap i „polowanie na dane” (Elastic)
+## Minimalna analiza w Kibanie: pięć perspektyw „postrzegania danych”
 
-W PowerShell nie używaj `curl` (to alias), tylko `curl.exe` albo `Invoke-RestMethod`. Komendy poniżej są zgodne z PowerShell.
+Perspektywa 1: Tożsamość i genealogia bytu (AID)
+Tu sprawdzasz: czy w ogóle widzisz spójny strumień dla aplikacji, czy wersje i commity tworzą ciąg.
 
-### Sygnał życia (PowerShell)
+KQL:
 
-```powershell
-curl.exe -sS "http://localhost:9200"
-curl.exe -sS "http://localhost:9200/_cluster/health?pretty"
-curl.exe -sS "http://localhost:5601/api/status"
+```kql
+aid.app_id:"myapp" and aid.env:"lab"
 ```
 
-### Bootstrap (pipeline + template + indeksy) (PowerShell)
+Perspektywa 2: Bezpieczeństwo (AppSec/SOC)
+Tu pytasz: ile jest High/Critical, co jest nowe, co wraca, co ma exploitability.
 
-```powershell
-$sbomPipe = @{
-  description = "SBOM normalize"
-  processors  = @(@{ set = @{ field = "@timestamp"; value = "{{_ingest.timestamp}}" } })
-} | ConvertTo-Json -Compress -Depth 32
+KQL (przykład):
 
-Invoke-RestMethod -Method Put -Uri "http://localhost:9200/_ingest/pipeline/sbom-normalize" -ContentType "application/json" -Body $sbomPipe
+```kql
+event_type:"scan" and aid.app_id:"myapp" and payload.summary.critical > 0
+```
 
-$vulnPipe = @{
-  description = "VULN normalize"
-  processors  = @(@{ set = @{ field = "@timestamp"; value = "{{_ingest.timestamp}}" } })
-} | ConvertTo-Json -Compress -Depth 32
+Perspektywa 3: Zmiana struktury (delta)
+Tu jest serce „epistemiki”: co doszło, co ubyło, co zmieniło wersję, czy rośnie graf zależności.
 
-Invoke-RestMethod -Method Put -Uri "http://localhost:9200/_ingest/pipeline/vuln-normalize" -ContentType "application/json" -Body $vulnPipe
+KQL:
 
-$sbomTpl = @{
-  index_patterns = @("sbom-events-*")
-  template = @{
-    settings = @{ number_of_shards = 1; number_of_replicas = 0 }
-    mappings = @{
-      dynamic = $true
-      properties = @{
-        "@timestamp" = @{ type = "date" }
-        app_id       = @{ type = "keyword" }
-        app_version  = @{ type = "keyword" }
-        vcs_ref      = @{ type = "keyword" }
-        owner_team   = @{ type = "keyword" }
-        type         = @{ type = "keyword" }
-        source       = @{ type = "keyword" }
-        build_id     = @{ type = "keyword" }
-        job          = @{ type = "keyword" }
+```kql
+event_type:"delta" and aid.app_id:"myapp"
+```
+
+Perspektywa 4: Zgodność (licencje/polityki)
+Tu nie interesuje Cię CVE, tylko to, czy skład łamie politykę licencyjną lub wewnętrzną.
+
+KQL:
+
+```kql
+event_type:"scan" and payload.licenses.deny_count > 0
+```
+
+Perspektywa 5: Operacje (stabilność pipeline i ingest)
+Tu pytasz: czy pipeline działa, czy ingest nie gubi zdarzeń, czy nie ma „dziur” w czasie.
+
+KQL:
+
+```kql
+aid.app_id:"myapp" and event_type:"gate" and payload.decision:"STOP"
+```
+
+Ważne: te zapytania zakładają, że w `payload` trzymasz chociaż streszczenia. Dlatego w kolejnych krokach dodamy minimalny schemat `payload.summary`.
+
+## Jenkins: konfigurujemy to „porządnie”
+
+W Jenkinsie celem jest pipeline, który robi cztery rzeczy i zawsze kończy się danymi w Elastic:
+
+Build → SBOM → Scan → Delta → Gate → Ingest.
+
+### Konfiguracja joba (UI), czyli co klikasz
+
+W „General” włączasz zakaz równoległych buildów (LAB), ustawiasz rotację buildów, włączasz parametryzację.
+
+W parametrach dodajesz minimum:
+`ES_URL`, `ES_INDEX`, `AID_ENV`, `AID_APP_ID`, opcjonalnie `AID_REPO`.
+
+Tokeny i sekrety trzymasz w Jenkins Credentials, nie w skrypcie.
+
+### Jenkinsfile: minimalny „heartbeat” (sprawdza łączność i schemat danych)
+
+Najpierw uruchom pipeline, który tylko wysyła 1 zdarzenie do Elastic. Dopiero jak je widzisz w Kibanie, dodajesz Syft/Grype.
+
+Poniżej wzorzec, który działa zarówno jako diagnostyka, jak i „kamień węgielny” dalszej automatyzacji:
+
+```groovy
+pipeline {
+  agent any
+
+  parameters {
+    string(name: 'ES_URL', defaultValue: 'http://host.docker.internal:9200', description: 'Elasticsearch URL')
+    string(name: 'ES_INDEX', defaultValue: 'sbom-test', description: 'Index for LAB events')
+    choice(name: 'AID_ENV', choices: ['lab','dev','test','prod'], description: 'Environment')
+  }
+
+  environment {
+    AID_APP_ID     = 'sbom'
+    AID_OWNER_TEAM = 'K82M'
+    AID_REPO       = 'DonkeyJJLove/sbom'
+    AID_VCS_REF    = 'local'
+    AID_APP_VERSION= '0.0.0'
+  }
+
+  stages {
+    stage('Derive AID from git (if available)') {
+      steps {
+        script {
+          if (isUnix()) {
+            sh '''
+              set -e
+              if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+                echo "AID_VCS_REF=$(git rev-parse --short HEAD)" > aid_dynamic.env
+                echo "AID_APP_VERSION=$(git describe --tags --always 2>/dev/null || git rev-parse --short HEAD)" >> aid_dynamic.env
+              else
+                echo "AID_VCS_REF=local" > aid_dynamic.env
+                echo "AID_APP_VERSION=0.0.0" >> aid_dynamic.env
+              fi
+            '''
+          } else {
+            bat '''
+              @echo off
+              echo AID_VCS_REF=local> aid_dynamic.env
+              echo AID_APP_VERSION=0.0.0>> aid_dynamic.env
+            '''
+          }
+
+          def props = readProperties file: 'aid_dynamic.env'
+          env.AID_VCS_REF = props['AID_VCS_REF']
+          env.AID_APP_VERSION = props['AID_APP_VERSION']
+        }
+      }
+    }
+
+    stage('Send heartbeat to Elastic') {
+      steps {
+        script {
+          if (isUnix()) {
+            sh '''
+              set -e
+              ts=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
+              cat > event.json <<JSON
+{
+  "@timestamp":"$ts",
+  "event_type":"sbom",
+  "aid":{
+    "app_id":"'"$AID_APP_ID"'",
+    "owner_team":"'"$AID_OWNER_TEAM"'",
+    "env":"'"$AID_ENV"'",
+    "vcs_ref":"'"$AID_VCS_REF"'",
+    "app_version":"'"$AID_APP_VERSION"'",
+    "repo":"'"$AID_REPO"'"
+  },
+  "msg":"jenkins heartbeat ok"
+}
+JSON
+              curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" -H "Content-Type: application/json" --data-binary @event.json
+            '''
+          } else {
+            powershell '''
+              $ts = (Get-Date).ToUniversalTime().ToString("o")
+              $body = @{
+                "@timestamp" = $ts
+                event_type = "sbom"
+                aid = @{
+                  app_id = "$env:AID_APP_ID"
+                  owner_team = "$env:AID_OWNER_TEAM"
+                  env = "$env:AID_ENV"
+                  vcs_ref = "$env:AID_VCS_REF"
+                  app_version = "$env:AID_APP_VERSION"
+                  repo = "$env:AID_REPO"
+                }
+                msg = "jenkins heartbeat ok"
+              } | ConvertTo-Json -Depth 6
+
+              Invoke-RestMethod -Method Post -Uri "$env:ES_URL/$env:ES_INDEX/_doc?refresh=true" -ContentType "application/json" -Body $body | Out-Null
+            '''
+          }
+        }
       }
     }
   }
-} | ConvertTo-Json -Compress -Depth 32
-
-Invoke-RestMethod -Method Put -Uri "http://localhost:9200/_index_template/sbom-template" -ContentType "application/json" -Body $sbomTpl
-
-$vulnTpl = @{
-  index_patterns = @("vuln-events-*")
-  template = @{
-    settings = @{ number_of_shards = 1; number_of_replicas = 0 }
-    mappings = @{
-      dynamic = $true
-      properties = @{
-        "@timestamp" = @{ type = "date" }
-        app_id       = @{ type = "keyword" }
-        app_version  = @{ type = "keyword" }
-        vcs_ref      = @{ type = "keyword" }
-        owner_team   = @{ type = "keyword" }
-        type         = @{ type = "keyword" }
-        source       = @{ type = "keyword" }
-        build_id     = @{ type = "keyword" }
-        job          = @{ type = "keyword" }
-        severity     = @{ type = "keyword" }
-        cve          = @{ type = "keyword" }
-      }
-    }
-  }
-} | ConvertTo-Json -Compress -Depth 32
-
-Invoke-RestMethod -Method Put -Uri "http://localhost:9200/_index_template/vuln-template" -ContentType "application/json" -Body $vulnTpl
-
-Invoke-RestMethod -Method Put -Uri "http://localhost:9200/sbom-events-000001" | Out-Null
-Invoke-RestMethod -Method Put -Uri "http://localhost:9200/vuln-events-000001" | Out-Null
+}
 ```
 
-### Test ingest (symulacja zdarzenia z Jenkinsa) (PowerShell)
+Po tym buildzie w Kibanie zobaczysz zdarzenie z `msg = jenkins heartbeat ok` i pełnym `aid.*`.
 
-```powershell
-$doc = @{
-  app_id      = "demo"
-  app_version = "1.0.0"
-  source      = "manual"
-  job         = "test"
-  build_id    = "b-1"
-  msg         = "hello from PS"
-} | ConvertTo-Json -Compress
+### Kolejny krok (już po heartbeat): SBOM + Scan + Delta + Gate
 
-Invoke-RestMethod -Method Post `
-  -Uri "http://localhost:9200/sbom-events-000001/_doc?pipeline=sbom-normalize" `
-  -ContentType "application/json" `
-  -Body $doc
-```
+W następnym etapie dołożymy:
+generowanie SBOM (Syft), skan (Grype), minimalne streszczenia `payload.summary`, delta (porównanie z poprzednim stanem), oraz gate (decyzja i ewentualne wyjątki).
 
-### Polowanie na dane (czy Jenkins coś wrzucił?) (PowerShell)
+Tu świadomie zaczynamy od heartbeat, bo to eliminuje 80% problemów „nie widzę danych”.
 
-```powershell
-curl.exe -sS "http://localhost:9200/_cat/indices?format=json"
-curl.exe -sS "http://localhost:9200/sbom-events-*/_count?pretty"
-curl.exe -sS "http://localhost:9200/vuln-events-*/_count?pretty"
-curl.exe -sS "http://localhost:9200/sbom-events-*/_search?size=10&sort=@timestamp:desc&pretty"
-curl.exe -sS "http://localhost:9200/vuln-events-*/_search?size=10&sort=@timestamp:desc&pretty"
-```
+## Jak robić „analizę zmiany” (delta) w praktyce
 
-Jeżeli widzisz dokumenty tylko „manual”, a nie z Jenkinsa, to znaczy, że Jenkins jeszcze nie publikuje zdarzeń w jobie/pipeline albo publikuje w innym formacie/indeksie. Wtedy tropem jest logika w Jenkinsfile (gdzie robisz POST) oraz to, czy Jenkins ma dostęp sieciowy do `http://elasticsearch:9200` w sieci dockerowej.
+Najprostsza delta, która daje ogrom wartości, to trzy liczby i trzy listy:
+ile komponentów doszło, ile ubyło, ile zmieniło wersję oraz top-ryzykowne zmiany.
 
-## Runbook: szybki test HEC (Splunk)
+W LAB można liczyć deltę lokalnie (skrypt w pipeline) i wysyłać jako osobny event `event_type:"delta"`. W produkcji możesz to robić albo w pipeline (najprościej), albo w analityce (gdy chcesz centralne porównania).
 
-W PowerShell do testów Splunka używaj `curl.exe` albo `Invoke-RestMethod`, bo `curl` w PowerShell to alias.
-
-```powershell
-curl.exe -k "https://localhost:8088/services/collector/health"
-
-$token = "00000000-0000-0000-0000-000000000000"
-$headers = @{ Authorization = "Splunk $token"; "Content-Type" = "application/json" }
-$body = @{ event = @{ msg = "hello"; source = "sbom-poc" }; sourcetype = "sbom:test" } | ConvertTo-Json -Compress
-
-Invoke-RestMethod -Method Post -Uri "https://localhost:8088/services/collector/event" -Headers $headers -Body $body
-```
-
-## Szybkie sprzątanie po testach
-
-Jeżeli chcesz usunąć kontenery i wolumeny danego wariantu, uruchom komendę dla konkretnego pliku compose:
-
-```bash
-docker compose -f docker-compose.splunk.yml down -v
-```
-
-albo:
-
-```bash
-docker compose -f docker-compose.elastic.yml down -v
-```
-
-To usuwa również wolumeny danych, więc traktuj to jako „reset środowiska”.
-
-```
-::contentReference[oaicite:0]{index=0}
-```
+Docelowo delta jest epistemiczną operacją: to nie „raport”, tylko sygnał: co się zmieniło w strukturze bytu i czy zmiana wnosi ryzyko.
