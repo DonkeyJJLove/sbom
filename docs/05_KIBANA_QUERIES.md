@@ -389,3 +389,4 @@ W kolejnym kroku możemy:
 
 ## Status
 Dokument operacyjny (LAB Elastic-only) dla strumienia zdarzeń pipeline SBOM.
+
