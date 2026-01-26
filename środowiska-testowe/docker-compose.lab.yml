@@ -24,9 +24,15 @@ x-es-env: &es-env
   xpack.security.enrollment.enabled: "false"
   ES_JAVA_OPTS: ${ES_JAVA_OPTS:--Xms1g -Xmx1g}
 
+# Docker.sock access (WSL: /var/run/docker.sock -> group docker, GID=1000, mode 660)
+x-docker-access: &docker-access
+  group_add:
+    - "1000"
+
 services:
   # UI/panel LAB (opcjonalny, ale wygodny)
   portainer:
+    <<: *docker-access
     image: portainer/portainer-ce:latest
     container_name: sbom-lab-portainer
     ports:
@@ -39,6 +45,7 @@ services:
 
   # CORE: toolbox + jenkins zawsze (backend wybierasz profilem)
   toolbox:
+    <<: *docker-access
     build:
       context: ../lab/toolbox
       dockerfile: Dockerfile
@@ -61,6 +68,7 @@ services:
     networks: [ci, mgmt]
 
   jenkins:
+    <<: *docker-access
     build:
       context: ../lab/jenkins
       dockerfile: Dockerfile
