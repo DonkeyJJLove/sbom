@@ -14,27 +14,27 @@ Poniższe slajdy są skrótem „od idei do praktyki”: od definicji SBOM, prze
 <summary>Rozwiń slideshow (5 slajdów)</summary>
 
 <p align="center">
-  <img src="img/slides/01_intro_sbom.png" alt="Introduction to SBOM" width="900"><br>
+  <img src="img/01_intro_sbom.png" alt="Introduction to SBOM" width="900"><br>
   <em>1. Introduction to SBOM</em>
 </p>
 
 <p align="center">
-  <img src="img/slides/02_automated_sbom_ci_cd.png" alt="Automated SBOM Analysis in CI/CD" width="900"><br>
+  <img src="img/02_automated_sbom_ci_cd.png" alt="Automated SBOM Analysis in CI/CD" width="900"><br>
   <em>2. Automated SBOM Analysis in CI/CD</em>
 </p>
 
 <p align="center">
-  <img src="img/slides/03_phased_devsecops_sbom.png" alt="Phased Implementation of DevSecOps with SBOM" width="900"><br>
+  <img src="img/03_phased_devsecops_sbom.png" alt="Phased Implementation of DevSecOps with SBOM" width="900"><br>
   <em>3. Phased Implementation of DevSecOps with SBOM</em>
 </p>
 
 <p align="center">
-  <img src="img/slides/04_workflow_sbom_ci_cd.png" alt="Workflow DevSecOps: SBOM w CI/CD" width="900"><br>
+  <img src="img/04_workflow_sbom_ci_cd.png" alt="Workflow DevSecOps: SBOM w CI/CD" width="900"><br>
   <em>4. Workflow DevSecOps: SBOM w CI/CD</em>
 </p>
 
 <p align="center">
-  <img src="img/slides/05_hybrid_architecture_sbom.png" alt="Hybrid architecture: CI/CD + SBOM + analityka" width="900"><br>
+  <img src="img/05_hybrid_architecture_sbom.png" alt="Hybrid architecture: CI/CD + SBOM + analityka" width="900"><br>
   <em>5. Architektura hybrydowa: CI/CD + SBOM + analityka</em>
 </p>
 
