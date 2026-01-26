@@ -44,7 +44,7 @@ Poniższe slajdy są skrótem „od idei do praktyki”: od definicji SBOM, prze
 
 Długi, spójny opis fundamentu („SBOM jako marker strukturalny i ontologiczna pieczęć relacji”, epistemika delty oraz cybernetyczna pętla *pomiar → próg → akcja*, domykana kryptografią dowodu pochodzenia) jest w pliku:
 
-- `kryptologia-informacyjna-sbom.md`
+[`kryptologia informacyjna`](`kryptologia-informacyjna-sbom.md`)
 
 To jest „rdzeń interpretacyjny” repo: pokazuje, że SBOM nie jest raportem, tylko sensorem stanu bytu, a dopiero progi i konsekwencje czynią go sterowalnym.
 
