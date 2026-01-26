@@ -1,0 +1,354 @@
+pipeline {
+  agent any
+
+  options {
+    disableConcurrentBuilds()
+    durabilityHint('MAX_SURVIVABILITY')
+    buildDiscarder(logRotator(numToKeepStr: '30'))
+    timestamps()
+  }
+
+  parameters {
+    string(name: 'ES_URL',   defaultValue: 'http://elasticsearch:9200', description: 'Elasticsearch URL (docker network)')
+    string(name: 'ES_INDEX', defaultValue: 'sbom-test', description: 'Index for LAB events')
+
+    choice(name: 'AID_ENV', choices: ['lab','dev','test','prod'], description: 'Environment')
+    string(name: 'AID_APP_ID',      defaultValue: 'sbom', description: 'Stable application ID')
+    string(name: 'AID_OWNER_TEAM',  defaultValue: 'K82M', description: 'Owner team')
+    string(name: 'AID_REPO',        defaultValue: 'DonkeyJJLove/sbom', description: 'Repo identifier')
+    string(name: 'AID_VCS_REF',     defaultValue: 'local', description: 'VCS ref (pipeline may override)')
+    string(name: 'AID_APP_VERSION', defaultValue: '0.0.0', description: 'App version (pipeline may override)')
+
+    choice(name: 'TARGET_KIND', choices: ['repo','image','file'], description: 'What to scan')
+    string(name: 'TARGET_REF', defaultValue: '.', description: 'repo path / image name / file path')
+
+    choice(name: 'FAIL_ON', choices: ['none','critical','high'], description: 'Gate threshold')
+    booleanParam(name: 'FULL_PAYLOAD', defaultValue: false, description: 'Index full JSONs (heavy)')
+  }
+
+  environment {
+    OUT_DIR      = '.lab_out'
+    SBOM_CDX     = "${OUT_DIR}/sbom.cdx.json"
+    SCAN_JSON    = "${OUT_DIR}/scan.grype.json"
+    SNAPSHOT_TXT = "${OUT_DIR}/components.snapshot.txt"
+    PREV_TXT     = "${OUT_DIR}/components.prev.txt"
+    DELTA_JSON   = "${OUT_DIR}/delta.json"
+    GATE_VARS    = "${OUT_DIR}/gate.vars"
+  }
+
+  stages {
+
+    stage('Prep') {
+      steps {
+        sh '''
+          set -e
+          mkdir -p "$OUT_DIR"
+          command -v docker >/dev/null
+          command -v jq >/dev/null
+          command -v curl >/dev/null
+          docker version >/dev/null 2>&1 || true
+        '''
+      }
+    }
+
+    stage('Checkout (optional)') {
+      steps {
+        script {
+          try { checkout scm } catch (e) { echo "checkout scm skipped: ${e}" }
+        }
+      }
+    }
+
+    stage('Derive AID from git (best-effort)') {
+      steps {
+        script {
+          def vcs = sh(
+            script: '''
+              set -e
+              if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+                git rev-parse --short HEAD
+              else
+                printf "%s" "$AID_VCS_REF"
+              fi
+            ''',
+            returnStdout: true
+          ).trim()
+
+          def ver = sh(
+            script: '''
+              set -e
+              if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+                (git describe --tags --always 2>/dev/null || git rev-parse --short HEAD)
+              else
+                printf "%s" "$AID_APP_VERSION"
+              fi
+            ''',
+            returnStdout: true
+          ).trim()
+
+          env.AID_VCS_REF = vcs
+          env.AID_APP_VERSION = ver
+          echo "AID derived: vcs_ref=${env.AID_VCS_REF}, app_version=${env.AID_APP_VERSION}"
+
+          sh """
+            set -e
+            mkdir -p "$OUT_DIR"
+            echo "AID_VCS_REF=${env.AID_VCS_REF}" > "$OUT_DIR/aid_dynamic.env"
+            echo "AID_APP_VERSION=${env.AID_APP_VERSION}" >> "$OUT_DIR/aid_dynamic.env"
+          """
+        }
+      }
+    }
+
+    stage('SBOM + SCAN in toolbox') {
+      steps {
+        sh '''
+          set -e
+
+          JH_VOL="$(docker inspect sbom-lab-jenkins --format '{{ range .Mounts }}{{ if eq .Destination "/var/jenkins_home" }}{{ .Name }}{{ end }}{{ end }}')"
+          [ -n "$JH_VOL" ] || { echo "Cannot determine jenkins_home volume"; exit 4; }
+          echo "Using Jenkins home volume: $JH_VOL"
+
+          docker run --rm \
+            -e TARGET_KIND="$TARGET_KIND" \
+            -e TARGET_REF="$TARGET_REF" \
+            -v "${JH_VOL}:/var/jenkins_home" \
+            -w "$WORKSPACE" \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            sbom-lab/toolbox:latest \
+            bash -lc '
+              set -e
+              mkdir -p .lab_out
+
+              : "${TARGET_KIND:=repo}"
+              : "${TARGET_REF:=.}"
+
+              case "$TARGET_KIND" in
+                repo|image|file) T="$TARGET_REF" ;;
+                *) echo "Unknown TARGET_KIND=$TARGET_KIND"; exit 2 ;;
+              esac
+
+              echo "[toolbox] pwd=$(pwd)"
+              echo "[toolbox] TARGET_KIND=$TARGET_KIND TARGET_REF=$TARGET_REF"
+
+              syft "$T" -o cyclonedx-json > .lab_out/sbom.cdx.json
+              grype "sbom:.lab_out/sbom.cdx.json" -o json > .lab_out/scan.grype.json
+
+              jq -r "
+                (.components // []) | .[] |
+                (
+                  (try .purl catch null) as \\$p |
+                  (try .name catch null) as \\$n |
+                  (try .version catch null) as \\$v |
+                  if \\$p != null and \\$v != null then (\\$p + \\\"@\\\" + \\$v)
+                  elif \\$p != null then \\$p
+                  elif \\$n != null and \\$v != null then (\\$n + \\\"@\\\" + \\$v)
+                  elif \\$n != null then \\$n
+                  else empty end
+                )
+              " .lab_out/sbom.cdx.json | sort -u > .lab_out/components.snapshot.txt
+
+              chown -R 1000:1000 .lab_out || true
+            '
+
+          test -s "$SBOM_CDX"  || { echo "Missing or empty $SBOM_CDX";  ls -la "$OUT_DIR" || true; exit 3; }
+          test -s "$SCAN_JSON" || { echo "Missing or empty $SCAN_JSON"; ls -la "$OUT_DIR" || true; exit 3; }
+          test -f "$SNAPSHOT_TXT" || { echo "Missing $SNAPSHOT_TXT"; ls -la "$OUT_DIR" || true; exit 3; }
+        '''
+      }
+    }
+
+    stage('Fetch previous snapshot (Elastic)') {
+      steps {
+        sh '''
+          set -e
+
+          QUERY=$(jq -n \
+            --arg app_id "$AID_APP_ID" \
+            --arg env "$AID_ENV" \
+            --arg repo "$AID_REPO" \
+            '{
+              size: 1,
+              sort: [{"@timestamp":"desc"}],
+              query: {
+                bool: {
+                  filter: [
+                    {term: {event_type: "sbom_snapshot"}},
+                    {term: {"aid.app_id": $app_id}},
+                    {term: {"aid.env": $env}},
+                    {term: {"aid.repo": $repo}}
+                  ]
+                }
+              }
+            }'
+          )
+
+          RESP=$(curl -sS -X POST "$ES_URL/$ES_INDEX/_search" \
+            -H "Content-Type: application/json" \
+            --data-binary "$QUERY" || true)
+
+          echo "$RESP" | jq -e '.hits.hits | length > 0' >/dev/null 2>&1 || { : > "$PREV_TXT"; exit 0; }
+          echo "$RESP" | jq -r '.hits.hits[0]._source.payload.components_snapshot[]? // empty' | sort -u > "$PREV_TXT"
+        '''
+      }
+    }
+
+    stage('DELTA') {
+      steps {
+        sh '''
+          set -e
+          comm -23 "$SNAPSHOT_TXT" "$PREV_TXT" > "$OUT_DIR/added.txt" || true
+          comm -13 "$SNAPSHOT_TXT" "$PREV_TXT" > "$OUT_DIR/removed.txt" || true
+
+          ADDED_COUNT=$(wc -l < "$OUT_DIR/added.txt" | tr -d ' ')
+          REMOVED_COUNT=$(wc -l < "$OUT_DIR/removed.txt" | tr -d ' ')
+
+          ADDED_JSON=$(jq -R -s 'split("\n") | map(select(length>0))' "$OUT_DIR/added.txt")
+          REMOVED_JSON=$(jq -R -s 'split("\n") | map(select(length>0))' "$OUT_DIR/removed.txt")
+
+          jq -n \
+            --argjson added_count "$ADDED_COUNT" \
+            --argjson removed_count "$REMOVED_COUNT" \
+            --argjson added "$ADDED_JSON" \
+            --argjson removed "$REMOVED_JSON" \
+            '{
+              summary: { added: $added_count, removed: $removed_count },
+              added: $added,
+              removed: $removed
+            }' > "$DELTA_JSON"
+        '''
+      }
+    }
+
+    stage('GATE') {
+      steps {
+        sh '''
+          set -e
+          CRIT=$(jq '[.matches[]? | .vulnerability.severity? | select(.=="Critical")] | length' "$SCAN_JSON")
+          HIGH=$(jq '[.matches[]? | .vulnerability.severity? | select(.=="High")] | length' "$SCAN_JSON")
+
+          DECISION="GO"
+          REASON="ok"
+
+          if [ "$FAIL_ON" = "critical" ] && [ "$CRIT" -gt 0 ]; then DECISION="STOP"; REASON="critical>0"; fi
+          if [ "$FAIL_ON" = "high" ] && { [ "$CRIT" -gt 0 ] || [ "$HIGH" -gt 0 ]; }; then DECISION="STOP"; REASON="high_or_critical>0"; fi
+
+          echo "$CRIT $HIGH $DECISION $REASON" > "$GATE_VARS"
+        '''
+      }
+    }
+
+    stage('INGEST (Elastic events)') {
+      steps {
+        sh '''
+          set -e
+          TS=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
+          read CRIT HIGH DECISION REASON < "$GATE_VARS"
+
+          AID=$(jq -n \
+            --arg app_id "$AID_APP_ID" \
+            --arg owner_team "$AID_OWNER_TEAM" \
+            --arg env "$AID_ENV" \
+            --arg vcs_ref "$AID_VCS_REF" \
+            --arg app_version "$AID_APP_VERSION" \
+            --arg repo "$AID_REPO" \
+            '{app_id:$app_id, owner_team:$owner_team, env:$env, vcs_ref:$vcs_ref, app_version:$app_version, repo:$repo}'
+          )
+
+          COMPS=$(jq -R -s 'split("\n") | map(select(length>0))' "$SNAPSHOT_TXT")
+
+          SNAP=$(jq -n \
+            --arg ts "$TS" \
+            --argjson aid "$AID" \
+            --argjson comps "$COMPS" \
+            '{
+              "@timestamp": $ts,
+              event_type: "sbom_snapshot",
+              aid: $aid,
+              msg: "components snapshot for delta",
+              payload: { components_snapshot: $comps }
+            }'
+          )
+          curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" \
+            -H "Content-Type: application/json" \
+            --data-binary "$SNAP" >/dev/null
+
+          SBOM_PAYLOAD=$(jq -n \
+            --argjson full "$FULL_PAYLOAD" \
+            --slurpfile sbom "$SBOM_CDX" \
+            'if $full then { sbom: ($sbom[0] // {}) } else { summary: { note:"sbom generated", mode:"summary_only" } } end'
+          )
+          SBOM_EVT=$(jq -n \
+            --arg ts "$TS" --argjson aid "$AID" --argjson payload "$SBOM_PAYLOAD" \
+            '{ "@timestamp":$ts, event_type:"sbom", aid:$aid, msg:"sbom generated", payload:$payload }'
+          )
+          curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" \
+            -H "Content-Type: application/json" \
+            --data-binary "$SBOM_EVT" >/dev/null
+
+          SCAN_PAYLOAD=$(jq -n \
+            --argjson full "$FULL_PAYLOAD" \
+            --slurpfile scan "$SCAN_JSON" \
+            --argjson critical "$CRIT" \
+            --argjson high "$HIGH" \
+            '{
+              summary: { critical:$critical, high:$high },
+              scan: (if $full then ($scan[0] // {}) else null end)
+            }'
+          )
+          SCAN_EVT=$(jq -n \
+            --arg ts "$TS" --argjson aid "$AID" --argjson payload "$SCAN_PAYLOAD" \
+            '{ "@timestamp":$ts, event_type:"scan", aid:$aid, msg:"grype scan completed", payload:$payload }'
+          )
+          curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" \
+            -H "Content-Type: application/json" \
+            --data-binary "$SCAN_EVT" >/dev/null
+
+          DELTA_EVT=$(jq -n \
+            --arg ts "$TS" \
+            --argjson aid "$AID" \
+            --slurpfile payload "$DELTA_JSON" \
+            '{ "@timestamp":$ts, event_type:"delta", aid:$aid, msg:"delta computed", payload: ($payload[0] // {}) }'
+          )
+          curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" \
+            -H "Content-Type: application/json" \
+            --data-binary "$DELTA_EVT" >/dev/null
+
+          GATE_EVT=$(jq -n \
+            --arg ts "$TS" --argjson aid "$AID" \
+            --arg decision "$DECISION" --arg reason "$REASON" --arg fail_on "$FAIL_ON" \
+            --argjson critical "$CRIT" --argjson high "$HIGH" \
+            '{
+              "@timestamp": $ts,
+              event_type: "gate",
+              aid: $aid,
+              msg: "gate decision",
+              payload: {
+                policy: { fail_on: $fail_on },
+                summary: { critical: $critical, high: $high },
+                decision: $decision,
+                reason: $reason
+              }
+            }'
+          )
+          curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" \
+            -H "Content-Type: application/json" \
+            --data-binary "$GATE_EVT" >/dev/null
+
+          if [ "$DECISION" = "STOP" ]; then
+            echo "GATE STOP: $REASON"
+            exit 10
+          fi
+
+          echo "GATE GO"
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      archiveArtifacts artifacts: '.lab_out/*', allowEmptyArchive: true
+    }
+  }
+}
