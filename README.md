@@ -1,154 +1,140 @@
-# SBOM LAB — Elastic-only DevSecOps Playground
+# SBOM LAB — DevSecOps Playground (Elastic/Kibana **lub** Splunk)
 
-Ten repozytorium to **laboratorium analizy SBOM** zbudowane w duchu:
-**pomiar → próg → decyzja**,
-gdzie **SBOM jest odciskiem relacji bytu (Sigillum Relationis)**, a **AID jest jego tożsamością w czasie**.
+To repozytorium to **laboratorium analizy SBOM** zbudowane w duchu: **pomiar → próg → decyzja**, gdzie **SBOM jest odciskiem relacji bytu (Sigillum Relationis)**, a **AID jest jego tożsamością w czasie**.
 
-To nie jest demo „listy bibliotek”.
-To jest **system wnioskowania o oprogramowaniu** oparty o:
+To nie jest demo „listy bibliotek”. To jest **system wnioskowania o oprogramowaniu**: o jego składzie, zmianie struktury (delta), ryzyku (podatności / licencje) i decyzjach (gate), zasilany przez pipeline CI/CD.
 
-* Jenkins (kontroler),
-* toolbox (runtime narzędzi: syft / grype),
-* Elasticsearch + Kibana (pamięć i analityka).
+Rdzeń LAB-u jest stały (Jenkins + toolbox), natomiast analityka jest wybierana jako **alternatywny backend**: uruchamiasz albo **Elastic + Kibana**, albo **Splunk**. Nie uruchamiamy ich równolegle — to dwie alternatywy tej samej roli.
 
----
+## Slideshow (materiał szkoleniowy)
+
+Poniższe slajdy są skrótem „od idei do praktyki”: od definicji SBOM, przez automatyzację w CI/CD, po architekturę i fazy wdrożenia. Umieść je w repo np. w `img/slides/` i zaktualizuj ścieżki, jeśli używasz innego katalogu.
+
+<details>
+<summary>Rozwiń slideshow (5 slajdów)</summary>
+
+<p align="center">
+  <img src="img/slides/01_intro_sbom.png" alt="Introduction to SBOM" width="900"><br>
+  <em>1. Introduction to SBOM</em>
+</p>
+
+<p align="center">
+  <img src="img/slides/02_automated_sbom_ci_cd.png" alt="Automated SBOM Analysis in CI/CD" width="900"><br>
+  <em>2. Automated SBOM Analysis in CI/CD</em>
+</p>
+
+<p align="center">
+  <img src="img/slides/03_phased_devsecops_sbom.png" alt="Phased Implementation of DevSecOps with SBOM" width="900"><br>
+  <em>3. Phased Implementation of DevSecOps with SBOM</em>
+</p>
+
+<p align="center">
+  <img src="img/slides/04_workflow_sbom_ci_cd.png" alt="Workflow DevSecOps: SBOM w CI/CD" width="900"><br>
+  <em>4. Workflow DevSecOps: SBOM w CI/CD</em>
+</p>
+
+<p align="center">
+  <img src="img/slides/05_hybrid_architecture_sbom.png" alt="Hybrid architecture: CI/CD + SBOM + analityka" width="900"><br>
+  <em>5. Architektura hybrydowa: CI/CD + SBOM + analityka</em>
+</p>
+
+</details>
+
+## Fundament filozoficzny i „dlaczego to działa”
+
+Długi, spójny opis fundamentu („SBOM jako marker strukturalny i ontologiczna pieczęć relacji”, epistemika delty oraz cybernetyczna pętla *pomiar → próg → akcja*, domykana kryptografią dowodu pochodzenia) jest w pliku:
+
+- `kryptologia-informacyjna-sbom.md`
+
+To jest „rdzeń interpretacyjny” repo: pokazuje, że SBOM nie jest raportem, tylko sensorem stanu bytu, a dopiero progi i konsekwencje czynią go sterowalnym.
 
 ## Co tu znajdziesz (w skrócie)
 
-* **LAB Elastic-only** — bez Splunka, bez SIEM-owych skrótów myślowych
-* **Pipeline SBOM**: Build → SBOM → Scan → Delta → Gate → Ingest
-* **Jednolity kontrakt danych** (AID + koperta zdarzenia)
-* **Gotowe zapytania KQL** do pierwszego wnioskowania
-* **Powtarzalne środowisko Docker Compose**
+Masz tu powtarzalne środowisko Docker Compose, spójny kontrakt danych (AID + koperta zdarzenia) oraz pipeline, który wytwarza obserwacje: `sbom`, `scan`, `delta`, `gate`.
 
----
+W praktyce repo prowadzi Cię przez trzy poziomy: PoC (działa end‑to‑end), pilot (progi i alerty), rollout (wiele pipeline’ów), operacje ciągłe (trend, MTTR, polityki).
 
-## Szybki start (5 minut)
+## Szybki start (backend jako alternatywa)
 
-### 1. Wymagania
+Wymagania: Docker + Docker Compose v2, oraz zasoby RAM zależne od backendu (Elastic zwykle potrzebuje więcej).
 
-* Docker + Docker Compose v2
-* 8–12 GB RAM (Elastic)
-
-### 2. Uruchom LAB
+Wejdź do katalogu środowisk:
 
 ```bash
 cd środowiska-testowe
-docker compose -f docker-compose.lab.yml up -d --build
 ```
 
-### 3. Sprawdź usługi
+### Wariant A: Elastic + Kibana (profil `elastic`)
 
-* Elastic: [http://localhost:9200](http://localhost:9200)
-* Kibana: [http://localhost:5601](http://localhost:5601)
-* Jenkins: [http://localhost:8080](http://localhost:8080)
-
----
-
-## Pierwszy realny pomiar SBOM (najważniejsze)
-
-1. Wejdź do **Jenkins → sbom-aid-lab → Build with Parameters**
-2. Ustaw:
-
-   * `TARGET_KIND = repo`
-   * `TARGET_REF = .`
-   * `AID_APP_ID = sbom`
-   * `AID_REPO = DonkeyJJLove/sbom`
-   * `AID_ENV = lab`
-   * `FAIL_ON = none`
-   * `FULL_PAYLOAD = false`
-3. Uruchom **Build**
-
-To tworzy **pierwszy byt repozytorium w analityce**.
-
----
-
-## Gdzie są dane?
-
-### Kibana → Discover
-
-Utwórz **Data View**:
-
-* Index pattern: `sbom-*`
-* Time field: `@timestamp`
-* Kliknij **Refresh field list**
-
-Podstawowe KQL:
-
-```kql
-event_type : "sbom" and aid.repo : "DonkeyJJLove/sbom"
+```bash
+docker compose -f docker-compose.lab.yml --profile elastic up -d --build
 ```
 
-Jeśli to widzisz — **LAB działa end-to-end**.
+Dostęp:
+- Elasticsearch: http://localhost:9200
+- Kibana: http://localhost:5601
+- Jenkins: http://localhost:8080
 
----
+### Wariant B: Splunk (profil `splunk`)
+
+```bash
+docker compose -f docker-compose.lab.yml --profile splunk up -d --build
+```
+
+Dostęp:
+- Splunk Web: http://localhost:8000
+- HEC ingest: http://localhost:8088
+- Jenkins: http://localhost:8080
+
+Jeżeli przełączasz backend, zatrzymaj poprzedni wariant (nie uruchamiamy ich równolegle):
+
+```bash
+docker compose -f docker-compose.lab.yml stop elasticsearch kibana
+# albo:
+docker compose -f docker-compose.lab.yml stop splunk
+```
+
+## Pierwszy realny pomiar (end‑to‑end)
+
+Pierwszy cel LAB-u jest prosty: wygenerować **jedno zdarzenie** z `AID` i zobaczyć je w analityce. To potwierdza, że pipeline i model danych działają.
+
+Dokładny tutorial (krok po kroku, dla obu backendów) jest tutaj:
+- `środowiska-testowe/Środowiska_testowe_LAB_do_analizy_SBOM.md`
+
+## Model danych (minimum)
+
+Każde zdarzenie ma `@timestamp`, `event_type` i `aid.*`. `event_type` przyjmujemy jako słownik: `sbom / scan / delta / gate`. `aid` trzyma tożsamość bytu (K82M jako mandat).
+
+Minimalny przykład:
+
+```json
+{
+  "@timestamp": "2026-01-25T19:13:49.574Z",
+  "event_type": "sbom",
+  "aid": { "app_id":"sbom","owner_team":"K82M","env":"lab","vcs_ref":"local","app_version":"0.0.0","repo":"DonkeyJJLove/sbom" },
+  "msg": "first measurement ok",
+  "payload": {}
+}
+```
 
 ## Jak wnioskować (minimalny zestaw)
 
-* **Tożsamość bytu**
+W Elastic/Kibana startujesz od KQL:
 
-  ```kql
-  aid.app_id : "sbom" and aid.env : "lab"
-  ```
-
-* **Skład (SBOM)**
-
-  ```kql
-  event_type : "sbom"
-  ```
-
-* **Podatności (SCAN)**
-
-  ```kql
-  event_type : "scan" and payload.summary.critical > 0
-  ```
-
-* **Zmiana (DELTA)**
-
-  ```kql
-  event_type : "delta"
-  ```
-
-* **Decyzje (GATE)**
-
-  ```kql
-  event_type : "gate"
-  ```
-
----
-
-## Struktura repo (czytaj jak mapę)
-
-```text
-.
-├─ README.md                  ← to jest punkt wejścia
-├─ docs/
-│  ├─ 01_AID_CONTRACT.md      ← kontrakt tożsamości bytu
-│  ├─ 02_LAB_SETUP_ELASTIC.md ← Elastic-only LAB (szczegóły)
-│  ├─ 03_JENKINS_PIPELINE.md  ← pipeline + Jenkinsfile
-│  ├─ 04_DATA_MODEL.md        ← koperta zdarzeń i pola
-│  ├─ 05_KIBANA_QUERIES.md    ← wnioskowanie i KQL
-│  └─ 90_APPENDIX_KRYPTOLOGIA.md
-├─ lab/
-│  ├─ jenkins/                ← Dockerfile Jenkinsa
-│  └─ toolbox/                ← Dockerfile narzędzi (syft/grype)
-├─ img/                        ← obrazy szkoleniowe
-└─ środowiska-testowe/
-   ├─ docker-compose.lab.yml  ← DOMYŚLNY LAB
-   ├─ .env.lab
-   └─ out/                     ← artefakty LAB
+```kql
+aid.owner_team : "K82M" and event_type : "sbom"
 ```
 
----
+W Splunk traktujesz event jako JSON i na start robisz `spath`:
 
-## Filozofia projektu (krótko)
+```spl
+index=* | spath | search aid.owner_team="K82M" event_type="sbom"
+```
 
-* **SBOM** nie jest raportem, tylko **próbką stanu bytu**
-* **Delta** jest ważniejsza niż stan absolutny
-* **Gate** to akt decyzyjny, nie alert
-* **Elastic** to pamięć epistemiczna, nie tylko logi
-* **Jenkins** nie „wie” — Jenkins tylko **uruchamia obserwację**
+To jest najkrótsza droga do tego, by „widzieć byt” i zacząć analizować jego strukturę oraz zmianę w czasie.
 
+## Filozofia projektu (krótko, operacyjnie)
 
+SBOM nie jest raportem, tylko **próbką stanu bytu**, powtarzalną i porównywalną. Delta jest ważniejsza niż stan absolutny, bo to zmiana wnosi ryzyko i dryf. Gate to akt decyzyjny, nie alert. Analityka (Elastic lub Splunk) jest pamięcią epistemiczną, nie tylko logami. Jenkins nie „wie” — Jenkins uruchamia obserwację i egzekwuje progi.
 
 
