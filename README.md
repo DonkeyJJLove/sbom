@@ -98,8 +98,7 @@ docker compose -f docker-compose.lab.yml stop splunk
 
 Pierwszy cel LAB-u jest prosty: wygenerować **jedno zdarzenie** z `AID` i zobaczyć je w analityce. To potwierdza, że pipeline i model danych działają.
 
-Dokładny tutorial (krok po kroku, dla obu backendów) jest tutaj:
-- `środowiska-testowe/Środowiska_testowe_LAB_do_analizy_SBOM.md`
+Dokładny tutorial (krok po kroku, dla obu backendów) jest tutaj: [środowiska testowe](środowiska-testowe/README.md).
 
 ## Model danych (minimum)
 
