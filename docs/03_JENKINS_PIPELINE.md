@@ -1,490 +1,373 @@
-# 03_JENKINS_PIPELINE — konfiguracja i uruchomienie pipeline (LAB Elastic-only)
+# 03_JENKINS_PIPELINE — pełny samouczek (LAB Elastic-only)
 
-## Cel dokumentu
+Ten rozdział to **pełna ścieżka uruchomieniowa**: od startu labu, przez konfigurację Jenkinsa i wykonanie pierwszego pomiaru, aż po weryfikację danych w Elasticsearch i Kibanie oraz typowe awarie, które realnie napotkaliśmy i naprawiliśmy.
 
-Ten dokument opisuje:
-- konfigurację joba Jenkins w LAB-ie,
-- parametry sterujące,
-- sposób uruchomienia **pierwszego realnego pomiaru repozytorium**,
-- minimalne warunki poprawności (co musi się wydarzyć w Elastic).
-
-LAB jest Elastic-only: **Jenkins → toolbox → Elasticsearch → Kibana**.
+> **Źródło prawdy (kod pipeline):** `lab/jenkins/pipeline_one.pipeline`  
+> Ten dokument **nie duplikuje** całego Jenkinsfile, żeby uniknąć driftu (rozjazdu dokumentacji i implementacji).
 
 ---
 
-## Założenia architektury (LAB)
+## 0) Co finalnie działa (stan końcowy)
 
-### Role komponentów
-- **Jenkins**: kontroler uruchomień (scheduler + parametry)
-- **toolbox (sbom-lab/toolbox)**: runtime narzędzi (`syft`, `grype`, `jq`, `curl`, `git`)
-- **Elasticsearch**: pamięć zdarzeń i baza wnioskowania
-- **Kibana**: interfejs do wnioskowania
+Pipeline (Elastic-only) generuje i indeksuje do ES zestaw zdarzeń:
 
-### Dlaczego toolbox
-Nie instalujemy `jq/syft/grype` do Jenkinsa.  
-Pipeline uruchamia je w **toolbox** przez `docker run` (Jenkins ma tylko docker-cli + socket).
+- `event_type: sbom_snapshot`
+- `event_type: sbom`
+- `event_type: scan`
+- `event_type: delta`
+- `event_type: gate`
 
----
-
-## Wymagania pipeline
-
-Jenkins container / agent:
-- ma podmontowany docker socket: `/var/run/docker.sock`
-- ma `docker` CLI
-- ma dostęp do repo (bind mount do `/repo` albo checkout do workspace)
-
-Toolbox image:
-- `sbom-lab/toolbox:latest` istnieje (zbudowany przez compose)
+W Kibanie (Discover) widzisz dokumenty w data view `sbom-test*` (np. 5 hitów w oknie czasu), a w ES `_count` potwierdza faktyczną liczbę dokumentów (np. 6).
 
 ---
 
-## Konfiguracja joba w UI (Configure)
+## 1) Architektura LAB i pętla procesowa
 
-### 1) Type
-- **New Item → Pipeline**
+**LAB Elastic-only:**  
+**Jenkins → toolbox → Elasticsearch → Kibana**
 
-### 2) General
-- **Do not allow concurrent builds** → ON  
-  (delta ma sens tylko w sekwencji)
-- **Do not allow the pipeline to resume if the controller restarts** → ON  
-  (przerwany pomiar = pomiar nieważny)
-- **Discard old builds** → ON (np. 30)
-- **GitHub project** (opcjonalnie) → URL repo
+### Rola komponentów
+- **Jenkins** — orkiestracja uruchomień, parametryzacja, archiwizacja artefaktów `.lab_out/*`.
+- **toolbox (`sbom-lab/toolbox:latest`)** — runtime narzędzi (`syft`, `grype`, `jq`), wykonywany przez `docker run`.
+- **Elasticsearch** — „pamięć zdarzeń” (event store) i punkt odniesienia w czasie (snapshot → delta).
+- **Kibana** — interfejs analityczny (Discover / filtry / dashboardy / alerting).
 
-### 3) This project is parameterized → ON
+### Co pipeline wytwarza (artefakty / obserwacje)
+- **SBOM** (CycloneDX JSON) → `.lab_out/sbom.cdx.json`
+- **SCAN** (Grype JSON) → `.lab_out/scan.grype.json`
+- **SNAPSHOT** komponentów (lista linii) → `.lab_out/components.snapshot.txt`
+- **PREV** snapshot pobrany z ES → `.lab_out/components.prev.txt`
+- **DELTA** (added/removed) → `.lab_out/delta.json`
+- **GATE** (GO/STOP + powód) → `.lab_out/gate.vars`
 
-Dodaj parametry:
-
-#### Ingest (Elastic)
-- **Text**
-  - `ES_URL` (domyślnie: `http://elasticsearch:9200` jeśli Jenkins jest w tej samej sieci docker)
-  - `ES_INDEX` (domyślnie: `sbom-test`)
-
-#### AID (tożsamość bytu)
-- **Choice**
-  - `AID_ENV`: `lab`, `dev`, `test`, `prod`
-- **Text**
-  - `AID_APP_ID` (np. `sbom`)
-  - `AID_OWNER_TEAM` (np. `K82M`)
-  - `AID_REPO` (np. `DonkeyJJLove/sbom`)
-  - `AID_VCS_REF` (np. `local`, pipeline może nadpisać z git)
-  - `AID_APP_VERSION` (np. `0.0.0`, pipeline może nadpisać z git)
-
-#### Target (co analizujemy)
-- **Choice**
-  - `TARGET_KIND`: `repo`, `image`, `file`
-- **Text**
-  - `TARGET_REF`: `.`
-    - `repo` → `.` (workspace/repo)
-    - `image` → `myapp:1.2.3`
-    - `file` → `./path/to/artifact.zip`
-
-#### Gate (polityka)
-- **Choice**
-  - `FAIL_ON`: `none`, `critical`, `high`
-- **Boolean**
-  - `FULL_PAYLOAD` (domyślnie OFF)
-
-### 4) Triggers
-- **GitHub hook trigger for GITScm polling** → ON (opcjonalnie)
-- reszta triggerów → OFF (LAB)
-
-### 5) Pipeline
-- **Definition** → `Pipeline script`
-- Wklej Jenkinsfile (poniżej)
+> Snapshot może być pusty przy skanie `repo` bez manifestów zależności — to nie jest błąd, tylko informacja o braku składników wykrytych przez SBOM.
 
 ---
 
-## Jenkinsfile (toolbox-runner, Elastic-only)
+## 2) Struktura repo: pliki, które mają znaczenie
 
-Ten Jenkinsfile:
-- wykonuje SBOM/SCAN w toolbox
-- liczy prostą deltę (added/removed) lokalnie
-- zapisuje `sbom/scan/delta/gate` do Elastic
-- w LAB-ie domyślnie nie wymaga FULL_PAYLOAD
+- `lab/jenkins/pipeline_one.pipeline` — **kod pipeline** (źródło prawdy)
+- `środowiska-testowe/docker-compose.lab.yml` — compose dla LAB (Jenkins + toolbox + Elasticsearch + Kibana + Portainer)
+- `środowiska-testowe/.env.lab` — parametry labu (opcjonalnie)
+- `lab/jenkins/Dockerfile` — obraz Jenkinsa (docker-cli + curl/jq/git)
+- `lab/toolbox/Dockerfile` — obraz toolboxa (syft + grype + jq)
 
-```groovy
-pipeline {
-  agent any
+**Ważne:** plik compose nie ma domyślnej nazwy `docker-compose.yml`, więc zawsze używaj `-f docker-compose.lab.yml`.
 
-  options {
-    disableConcurrentBuilds()
-    durabilityHint('MAX_SURVIVABILITY')
-    buildDiscarder(logRotator(numToKeepStr: '30'))
-    timestamps()
-  }
+---
 
-  parameters {
-    string(name: 'ES_URL',   defaultValue: 'http://elasticsearch:9200', description: 'Elasticsearch URL (docker network)')
-    string(name: 'ES_INDEX', defaultValue: 'sbom-test', description: 'Index for LAB events')
+## 3) Uruchomienie LAB (Docker Desktop + WSL2)
 
-    choice(name: 'AID_ENV', choices: ['lab','dev','test','prod'], description: 'Environment')
-    string(name: 'AID_APP_ID',     defaultValue: 'sbom', description: 'Stable application ID')
-    string(name: 'AID_OWNER_TEAM', defaultValue: 'K82M', description: 'Owner team')
-    string(name: 'AID_REPO',       defaultValue: 'DonkeyJJLove/sbom', description: 'Repo identifier')
-    string(name: 'AID_VCS_REF',     defaultValue: 'local', description: 'VCS ref (pipeline may override)')
-    string(name: 'AID_APP_VERSION', defaultValue: '0.0.0', description: 'App version (pipeline may override)')
+### 3.1 Start środowiska (Elastic-only)
+W katalogu `środowiska-testowe`:
 
-    choice(name: 'TARGET_KIND', choices: ['repo','image','file'], description: 'What to scan')
-    string(name: 'TARGET_REF', defaultValue: '.', description: 'repo path / image name / file path')
-
-    choice(name: 'FAIL_ON', choices: ['none','critical','high'], description: 'Gate threshold')
-    booleanParam(name: 'FULL_PAYLOAD', defaultValue: false, description: 'Index full JSONs (heavy)')
-  }
-
-  environment {
-    OUT_DIR = '.lab_out'
-    SBOM_CDX = "${OUT_DIR}/sbom.cdx.json"
-    SCAN_JSON = "${OUT_DIR}/scan.grype.json"
-    SNAPSHOT_TXT = "${OUT_DIR}/components.snapshot.txt"
-    PREV_TXT = "${OUT_DIR}/components.prev.txt"
-    DELTA_JSON = "${OUT_DIR}/delta.json"
-    GATE_VARS = "${OUT_DIR}/gate.vars"
-  }
-
-  stages {
-
-    stage('Prep') {
-      steps {
-        sh '''
-          set -e
-          mkdir -p "$OUT_DIR"
-          command -v docker >/dev/null
-        '''
-      }
-    }
-
-    stage('Checkout (optional)') {
-      steps {
-        script {
-          try { checkout scm } catch (e) { echo "checkout scm skipped: ${e}" }
-        }
-      }
-    }
-
-    stage('Derive AID from git (best-effort)') {
-      steps {
-        sh '''
-          set -e
-          VCS_REF="${AID_VCS_REF}"
-          APP_VER="${AID_APP_VERSION}"
-
-          if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-            VCS_REF="$(git rev-parse --short HEAD)"
-            APP_VER="$(git describe --tags --always 2>/dev/null || git rev-parse --short HEAD)"
-          fi
-
-          echo "AID_VCS_REF=$VCS_REF" > "$OUT_DIR/aid_dynamic.env"
-          echo "AID_APP_VERSION=$APP_VER" >> "$OUT_DIR/aid_dynamic.env"
-        '''
-        script {
-          def props = readProperties file: "${env.OUT_DIR}/aid_dynamic.env"
-          env.AID_VCS_REF = props['AID_VCS_REF']
-          env.AID_APP_VERSION = props['AID_APP_VERSION']
-        }
-      }
-    }
-
-    stage('SBOM + SCAN in toolbox') {
-      steps {
-        sh '''
-          set -e
-
-          # toolbox robi syft+grype+jq (Jenkins nie ma tych narzędzi)
-          docker run --rm \
-            -v "$WORKSPACE:/work" -w /work \
-            sbom-lab/toolbox:latest \
-            bash -lc '
-              set -e
-              mkdir -p .lab_out
-
-              # TARGET selection
-              case "$TARGET_KIND" in
-                repo)  T="$TARGET_REF" ;;
-                image) T="$TARGET_REF" ;;
-                file)  T="$TARGET_REF" ;;
-                *) echo "Unknown TARGET_KIND=$TARGET_KIND"; exit 2 ;;
-              esac
-
-              syft "$T" -o cyclonedx-json > .lab_out/sbom.cdx.json
-              grype "sbom:.lab_out/sbom.cdx.json" -o json > .lab_out/scan.grype.json
-
-              # snapshot komponentów (dla delta): purl@version lub name@version
-              jq -r "
-                (.components // []) | .[] |
-                (
-                  (try .purl catch null) as \\$p |
-                  (try .name catch null) as \\$n |
-                  (try .version catch null) as \\$v |
-                  if \\$p != null and \\$v != null then (\\$p + \\\"@\\\" + \\$v)
-                  elif \\$p != null then \\$p
-                  elif \\$n != null and \\$v != null then (\\$n + \\\"@\\\" + \\$v)
-                  elif \\$n != null then \\$n
-                  else empty end
-                )
-              " .lab_out/sbom.cdx.json | sort -u > .lab_out/components.snapshot.txt
-            '
-        '''
-      }
-    }
-
-    stage('Fetch previous snapshot (Elastic)') {
-      steps {
-        sh '''
-          set -e
-
-          QUERY=$(cat <<'JSON'
-{
-  "size": 1,
-  "sort": [{"@timestamp":"desc"}],
-  "query": {
-    "bool": {
-      "filter": [
-        {"term": {"event_type":"sbom_snapshot"}},
-        {"term": {"aid.app_id":"__APP_ID__"}},
-        {"term": {"aid.env":"__ENV__"}},
-        {"term": {"aid.repo":"__REPO__"}}
-      ]
-    }
-  }
-}
-JSON
-)
-          QUERY="${QUERY/__APP_ID__/$AID_APP_ID}"
-          QUERY="${QUERY/__ENV__/$AID_ENV}"
-          QUERY="${QUERY/__REPO__/$AID_REPO}"
-
-          RESP=$(curl -sS -X POST "$ES_URL/$ES_INDEX/_search" -H "Content-Type: application/json" -d "$QUERY" || true)
-
-          echo "$RESP" | jq -e '.hits.hits | length > 0' >/dev/null 2>&1 || { : > "$PREV_TXT"; exit 0; }
-          echo "$RESP" | jq -r '.hits.hits[0]._source.payload.components_snapshot[]? // empty' | sort -u > "$PREV_TXT"
-        '''
-      }
-    }
-
-    stage('DELTA') {
-      steps {
-        sh '''
-          set -e
-          comm -23 "$SNAPSHOT_TXT" "$PREV_TXT" > "$OUT_DIR/added.txt" || true
-          comm -13 "$SNAPSHOT_TXT" "$PREV_TXT" > "$OUT_DIR/removed.txt" || true
-
-          ADDED_COUNT=$(wc -l < "$OUT_DIR/added.txt" | tr -d ' ')
-          REMOVED_COUNT=$(wc -l < "$OUT_DIR/removed.txt" | tr -d ' ')
-
-          jq -n \
-            --argjson added_count "$ADDED_COUNT" \
-            --argjson removed_count "$REMOVED_COUNT" \
-            --slurpfile added "$OUT_DIR/added.txt" \
-            --slurpfile removed "$OUT_DIR/removed.txt" \
-            '{
-              summary: { added: $added_count, removed: $removed_count },
-              added: ($added[0] // []),
-              removed: ($removed[0] // [])
-            }' > "$DELTA_JSON"
-        '''
-      }
-    }
-
-    stage('GATE') {
-      steps {
-        sh '''
-          set -e
-          CRIT=$(jq '[.matches[]? | .vulnerability.severity? | select(.=="Critical")] | length' "$SCAN_JSON")
-          HIGH=$(jq '[.matches[]? | .vulnerability.severity? | select(.=="High")] | length' "$SCAN_JSON")
-
-          DECISION="GO"
-          REASON="ok"
-
-          if [ "$FAIL_ON" = "critical" ] && [ "$CRIT" -gt 0 ]; then DECISION="STOP"; REASON="critical>0"; fi
-          if [ "$FAIL_ON" = "high" ] && { [ "$CRIT" -gt 0 ] || [ "$HIGH" -gt 0 ]; }; then DECISION="STOP"; REASON="high_or_critical>0"; fi
-
-          echo "$CRIT $HIGH $DECISION $REASON" > "$GATE_VARS"
-        '''
-      }
-    }
-
-    stage('INGEST (Elastic events)') {
-      steps {
-        sh '''
-          set -e
-          TS=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
-          read CRIT HIGH DECISION REASON < "$GATE_VARS"
-
-          # aid object
-          AID=$(jq -n \
-            --arg app_id "$AID_APP_ID" \
-            --arg owner_team "$AID_OWNER_TEAM" \
-            --arg env "$AID_ENV" \
-            --arg vcs_ref "$AID_VCS_REF" \
-            --arg app_version "$AID_APP_VERSION" \
-            --arg repo "$AID_REPO" \
-            '{app_id:$app_id, owner_team:$owner_team, env:$env, vcs_ref:$vcs_ref, app_version:$app_version, repo:$repo}'
-          )
-
-          # sbom_snapshot
-          SNAP=$(jq -n \
-            --arg ts "$TS" \
-            --argjson aid "$AID" \
-            --slurpfile comps "$SNAPSHOT_TXT" \
-            '{
-              "@timestamp": $ts,
-              event_type: "sbom_snapshot",
-              aid: $aid,
-              msg: "components snapshot for delta",
-              payload: { components_snapshot: ($comps[0] // []) }
-            }'
-          )
-          curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" -H "Content-Type: application/json" --data-binary "$SNAP" >/dev/null
-
-          # sbom (summary-only by default)
-          SBOM_PAYLOAD=$(jq -n \
-            --argjson full "$FULL_PAYLOAD" \
-            --argfile sbom "$SBOM_CDX" \
-            'if $full then { sbom: $sbom } else { summary: { note:"sbom generated", mode:"summary_only" } } end'
-          )
-          SBOM_EVT=$(jq -n \
-            --arg ts "$TS" --argjson aid "$AID" --argjson payload "$SBOM_PAYLOAD" \
-            '{ "@timestamp":$ts, event_type:"sbom", aid:$aid, msg:"sbom generated", payload:$payload }'
-          )
-          curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" -H "Content-Type: application/json" --data-binary "$SBOM_EVT" >/dev/null
-
-          # scan
-          SCAN_PAYLOAD=$(jq -n \
-            --argjson full "$FULL_PAYLOAD" \
-            --argfile scan "$SCAN_JSON" \
-            --argjson critical "$CRIT" \
-            --argjson high "$HIGH" \
-            '{
-              summary: { critical:$critical, high:$high },
-              scan: (if $full then $scan else null end)
-            }'
-          )
-          SCAN_EVT=$(jq -n \
-            --arg ts "$TS" --argjson aid "$AID" --argjson payload "$SCAN_PAYLOAD" \
-            '{ "@timestamp":$ts, event_type:"scan", aid:$aid, msg:"grype scan completed", payload:$payload }'
-          )
-          curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" -H "Content-Type: application/json" --data-binary "$SCAN_EVT" >/dev/null
-
-          # delta
-          DELTA_PAYLOAD=$(cat "$DELTA_JSON")
-          DELTA_EVT=$(jq -n \
-            --arg ts "$TS" --argjson aid "$AID" --argjson payload "$(echo "$DELTA_PAYLOAD" | jq '.')" \
-            '{ "@timestamp":$ts, event_type:"delta", aid:$aid, msg:"delta computed", payload:$payload }'
-          )
-          curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" -H "Content-Type: application/json" --data-binary "$DELTA_EVT" >/dev/null
-
-          # gate
-          GATE_EVT=$(jq -n \
-            --arg ts "$TS" --argjson aid "$AID" \
-            --arg decision "$DECISION" --arg reason "$REASON" --arg fail_on "$FAIL_ON" \
-            --argjson critical "$CRIT" --argjson high "$HIGH" \
-            '{
-              "@timestamp": $ts,
-              event_type: "gate",
-              aid: $aid,
-              msg: "gate decision",
-              payload: {
-                policy: { fail_on: $fail_on },
-                summary: { critical: $critical, high: $high },
-                decision: $decision,
-                reason: $reason
-              }
-            }'
-          )
-          curl -sS -X POST "$ES_URL/$ES_INDEX/_doc?refresh=true" -H "Content-Type: application/json" --data-binary "$GATE_EVT" >/dev/null
-
-          # enforce gate
-          if [ "$DECISION" = "STOP" ]; then
-            echo "GATE STOP: $REASON"
-            exit 10
-          fi
-
-          echo "GATE GO"
-        '''
-      }
-    }
-  }
-
-  post {
-    always {
-      archiveArtifacts artifacts: '.lab_out/*', allowEmptyArchive: true
-    }
-  }
-}
+```bash
+docker compose -p sbom-lab -f docker-compose.lab.yml --profile elastic up -d --build
 ````
 
+### 3.2 Aktualizacja kontenerów bez kasowania danych Jenkinsa
+
+**Nie używaj** `docker compose down -v` (usuwa volume `jenkins_home` = joby/konfiguracja).
+
+Zamiast tego:
+
+```bash
+docker compose -p sbom-lab -f docker-compose.lab.yml up -d --no-deps --force-recreate jenkins toolbox
+```
+
+Jeśli zmieniałeś Dockerfile:
+
+```bash
+docker compose -p sbom-lab -f docker-compose.lab.yml build jenkins toolbox
+docker compose -p sbom-lab -f docker-compose.lab.yml up -d --no-deps --force-recreate jenkins toolbox
+```
+
 ---
 
-## Pierwszy realny pomiar repo (krok po kroku)
+## 4) Krytyczny warunek: dostęp do `/var/run/docker.sock` (WSL)
 
-W Jenkins → **Build with Parameters** ustaw:
+W WSL sprawdziliśmy:
 
-* `TARGET_KIND = repo`
-* `TARGET_REF = .`
-* `AID_APP_ID = sbom`
-* `AID_REPO = DonkeyJJLove/sbom`
-* `AID_ENV = lab`
-* `FAIL_ON = none`
-* `FULL_PAYLOAD = false`
+* `/var/run/docker.sock` ma grupę `docker`
+* GID socketa w Twoim środowisku: **1000**
 
-Uruchom build.
+Sprawdzenie:
+
+```bash
+ls -l /var/run/docker.sock
+stat -c '%g %a %n' /var/run/docker.sock
+```
+
+### 4.1 Compose: group_add + mount socketa
+
+Dla usług używających dockera (`jenkins`, `toolbox`, opcjonalnie `portainer`) dopnij:
+
+```yaml
+volumes:
+  - /var/run/docker.sock:/var/run/docker.sock
+group_add:
+  - "1000"   # GID z `stat -c %g /var/run/docker.sock`
+```
+
+Bez tego pojawia się błąd:
+`permission denied while trying to connect to the docker API at unix:///var/run/docker.sock`
 
 ---
 
-## Kryteria sukcesu (w Elastic)
+## 5) Obraz Jenkinsa: jakie narzędzia MUSZĄ być dostępne
 
-W Kibanie / Discover:
+Przerabialiśmy to praktycznie: pipeline używa `jq` i `curl` w stage’ach fetch/delta/ingest.
+
+Minimalnie Jenkins powinien mieć:
+
+* `docker` (docker-ce-cli)
+* `curl`
+* `jq`
+* `git`
+* `bash` + coreutils
+
+Objaw braku: `command -v jq` kończy stage `Prep` błędem (exit 127).
+
+---
+
+## 6) Konfiguracja joba Jenkins (UI) — rekomendowany wariant
+
+### 6.1 Utwórz job
+
+**New Item → Pipeline**
+
+### 6.2 Opcje w `options { ... }` (w pipeline)
+
+W samym pliku pipeline używamy m.in.:
+
+* `disableConcurrentBuilds()` (delta ma sens tylko sekwencyjnie)
+* `durabilityHint('MAX_SURVIVABILITY')` (większa trwałość kosztem wydajności)
+* `buildDiscarder(logRotator(...))`
+* `timestamps()`
+
+> Uwaga: Jenkins może wyświetlić komunikat typu „Resume disabled … switching to … low-durability mode”, jeśli w UI wyłączyłeś resume dla uruchomienia. To nie psuje logiki pipeline, tylko zmienia tryb trwałości wykonania.
+
+### 6.3 Definition: Pipeline script from SCM (najlepsze)
+
+* **Definition:** Pipeline script from SCM
+* SCM: Git (Twoje repo)
+* **Script Path:** `lab/jenkins/pipeline_one.pipeline`
+
+To rozwiązuje problem „posypało się na brakującej klamrze }” — bo nie wklejasz ręcznie długiego kodu do UI.
+
+### 6.4 Parametry joba
+
+Upewnij się, że masz parametry zgodne z pipeline (minimum):
+
+**Elastic**
+
+* `ES_URL` = `http://elasticsearch:9200` (z perspektywy sieci docker)
+* `ES_INDEX` = `sbom-test`
+
+**AID (tożsamość)**
+
+* `AID_ENV` = `lab`
+* `AID_APP_ID` = `sbom`
+* `AID_OWNER_TEAM` = `K82M`
+* `AID_REPO` = `DonkeyJJLove/sbom`
+* `AID_VCS_REF`, `AID_APP_VERSION` — mogą zostać domyślne; pipeline ustala best-effort z gita
+
+**Target**
+
+* `TARGET_KIND` = `repo` (na start)
+* `TARGET_REF` = `.`
+
+  * repo: `.`
+  * image: `myapp:1.2.3`
+  * file: `./ścieżka/do/pliku.zip`
+
+**Gate**
+
+* `FAIL_ON` = `none` (na start)
+* `FULL_PAYLOAD` = `false` (na start)
+
+---
+
+## 7) Pierwszy realny pomiar repo (krok po kroku)
+
+1. Jenkins → **Build with Parameters**
+2. Ustaw:
+
+   * `TARGET_KIND=repo`
+   * `TARGET_REF=.`
+   * `FAIL_ON=none`
+   * `FULL_PAYLOAD=false`
+3. Start.
+
+### Artefakty
+
+Po buildzie, w archiwum artefaktów powinny pojawić się pliki `.lab_out/*` (m.in. SBOM/SCAN/DELTA/GATE).
+
+> W praktyce upewniliśmy się, że toolbox zapisuje do **tego samego jenkins_home volume**, a nie do bind-mount ścieżek, które existują tylko wewnątrz kontenera Jenkinsa.
+
+---
+
+## 8) Weryfikacja: Elasticsearch (czy ingest wszedł)
+
+### 8.1 Windows PowerShell — szybki check
+
+```powershell
+$EsHost="http://localhost:9200"
+$Index="sbom-test"
+
+# indeksy
+curl.exe -sS "$EsHost/_cat/indices?v"
+
+# count
+Invoke-RestMethod -Method GET -Uri "$EsHost/$Index/_count?pretty" | ConvertTo-Json -Depth 20
+
+# ostatni gate
+$body = @{
+  size = 1
+  sort = @(@{ "@timestamp" = "desc" })
+  query = @{ bool = @{ filter = @(@{ term = @{ event_type = "gate" } }) } }
+} | ConvertTo-Json -Depth 20
+
+Invoke-RestMethod -Method POST -Uri "$EsHost/$Index/_search?pretty" -ContentType "application/json" -Body $body |
+  ConvertTo-Json -Depth 20
+```
+
+### 8.2 Yellow na indeksie (1 node)
+
+W 1-node indeks bywa `yellow`, bo replika nie ma gdzie się przypisać.
+Ustaw:
+
+```http
+PUT sbom-test/_settings
+{
+  "index": { "number_of_replicas": 0 }
+}
+```
+
+---
+
+## 9) Weryfikacja: Kibana (Discover)
+
+### 9.1 Data View
+
+Kibana → Stack Management → Data Views:
+
+* Pattern: `sbom-test*`
+* Time field: `@timestamp`
+
+### 9.2 Discover: czas i KQL
+
+* Time picker: **Last 24 hours** (na start)
+* KQL:
 
 ```kql
 aid.repo : "DonkeyJJLove/sbom"
 ```
 
-Powinieneś zobaczyć **pakiet zdarzeń**:
+lub:
 
-* `event_type: sbom_snapshot`
-* `event_type: sbom`
-* `event_type: scan`
-* `event_type: delta`
-* `event_type: gate`
+```kql
+event_type : gate
+```
 
-Jeśli widzisz tylko manual/heartbeat → pipeline nie doszedł do ingestu.
+> Jeśli Discover pokazuje mniej hitów niż `_count`, to zwykle kwestia okna czasu (np. „Last 15 minutes”).
 
 ---
 
-## Typowe awarie i szybkie diagnozy
+## 10) Stabilizacja mapowania pól (ważne dla delty)
 
-### 1) `exit 127` w Jenkins
+Pipeline pobiera „previous snapshot” przez `term` na:
 
-Brak `docker` CLI w Jenkinsie albo brak dostępu do socket.
-Sprawdź w logu `Prep`:
+* `event_type`
+* `aid.app_id`, `aid.env`, `aid.repo`
 
-* `command -v docker`
+Żeby `term` działał deterministycznie, pola powinny być **keyword**.
 
-### 2) `docker run sbom-lab/toolbox:latest` nie działa
+### 10.1 Sprawdź field_caps
 
-Toolbox image nie zbudowany / nie istnieje.
-Zbuduj compose:
+```http
+GET sbom-test/_field_caps?fields=event_type,aid.app_id,aid.env,aid.repo
+```
 
-* `docker compose up -d --build`
+### 10.2 Template dla `sbom-test*` (zalecane w LAB)
 
-### 3) Kibana widzi dokumenty, ale nie widzi pól `aid.*`
+```http
+PUT _index_template/sbom-lab-template
+{
+  "index_patterns": ["sbom-test*"],
+  "priority": 200,
+  "template": {
+    "settings": { "number_of_shards": 1, "number_of_replicas": 0 },
+    "mappings": {
+      "properties": {
+        "@timestamp": { "type": "date" },
+        "event_type": { "type": "keyword" },
+        "aid": {
+          "properties": {
+            "app_id": { "type": "keyword" },
+            "owner_team": { "type": "keyword" },
+            "env": { "type": "keyword" },
+            "vcs_ref": { "type": "keyword" },
+            "app_version": { "type": "keyword" },
+            "repo": { "type": "keyword" }
+          }
+        }
+      }
+    }
+  }
+}
+```
 
-Odśwież Data View:
+Jeśli chcesz zastosować template „na czysto”:
 
-* **Stack Management → Data Views → Refresh field list**
+```http
+DELETE sbom-test
+```
 
-### 4) Filtry łapią „tokeny”
-
-Brak index template `keyword`.
-Zastosuj template z `02_LAB_SETUP_ELASTIC.md`.
+i uruchom pipeline ponownie, potem w Data View odśwież pola.
 
 ---
 
-## Status dokumentu
+## 11) Typowe awarie — czego się nauczyliśmy (case studies)
 
-**Operacyjny**: to jest domyślny pipeline LAB-u Elastic-only.
-Każdy kolejny etap wnioskowania zakłada, że ten pipeline generuje pełen strumień `sbom/scan/delta/gate`.
+### 11.1 `NoSuchMethodError: readProperties`
+
+Powód: brak pluginu Pipeline Utility Steps.
+Rozwiązanie: nie używać `readProperties`; AID wyliczać przez `sh(returnStdout:true)`.
+
+### 11.2 `RejectedAccessException: new java.util.Properties`
+
+Powód: Script Security sandbox blokuje konstrukcje Javy w Groovy.
+Rozwiązanie: jw. — bez `new Properties()`.
+
+### 11.3 `Bad substitution`
+
+Powód: `sh` w Jenkins używa `/bin/sh` (dash), a nie bash; bash-owe `${VAR/.../...}` nie działa.
+Rozwiązanie: budować JSON zapytań przez `jq -n ...`.
+
+### 11.4 `permission denied docker.sock`
+
+Powód: brak uprawnień do `/var/run/docker.sock`.
+Rozwiązanie: `group_add` z GID socketa + mount socketa.
+
+### 11.5 `no configuration file provided`
+
+Powód: compose file nie nazywa się domyślnie.
+Rozwiązanie: zawsze `-f docker-compose.lab.yml`.
+
+### 11.6 Brak plików `.lab_out/*` po toolbox
+
+Powód: `$WORKSPACE` z kontenera Jenkinsa nie jest ścieżką hosta — bind-mount nie działa jak oczekiwano.
+Rozwiązanie: toolbox montuje **ten sam volume** `jenkins_home` co Jenkins (wykryty przez `docker inspect sbom-lab-jenkins`).
+
+### 11.7 Snapshot pusty
+
+Powód: repo nie ma zależności wykrywalnych przez syft (brak manifestów).
+Rozwiązanie: snapshot może być pusty; pipeline nie powinien failować na `-s` dla snapshotu.
+
+### 11.8 `jq: Unknown option --argfile`
+
+Powód: `jq` nie ma `--argfile`.
+Rozwiązanie: `--slurpfile` dla JSON, a TXT→JSON przez `jq -R -s`.
 
 ---
-
