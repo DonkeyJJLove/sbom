@@ -1,0 +1,36 @@
+### Jak uruchamiać poprawnie alternatywy
+
+Elastic:
+
+```bash
+docker compose -f docker-compose.lab.yml --profile elastic up -d
+```
+
+Splunk:
+
+```bash
+docker compose -f docker-compose.lab.yml --profile splunk up -d
+```
+
+### Jak przełączać backend (żeby nie działały równolegle)
+
+Najpierw zatrzymaj backend Elastic, zostawiając core (jenkins/toolbox) w spokoju:
+
+```bash
+docker compose -f docker-compose.lab.yml stop elasticsearch kibana
+```
+
+Potem odpal Splunk:
+
+```bash
+docker compose -f docker-compose.lab.yml --profile splunk up -d
+```
+
+I weryfikacja:
+
+```bash
+docker compose -f docker-compose.lab.yml ps
+```
+
+Powinieneś zobaczyć `sbom-lab-splunk` gdy aktywny jest profil splunk.
+
