@@ -1,264 +1,391 @@
-# 05_KIBANA_QUERIES — wnioskowanie w Kibanie (KQL) dla LAB SBOM
+# 05_KIBANA_QUERIES — zapytania i workflow analityczne (LAB Elastic-only)
 
-## Cel dokumentu
+Ten rozdział to praktyczny „pakiet roboczy” do Kibany: **KQL do Discover**, gotowe **DSL do Dev Tools**, oraz przepisy na szybkie wizualizacje (Lens) dla strumienia zdarzeń generowanych przez pipeline SBOM.
 
-Ten dokument daje **minimalny, ale kompletny zestaw kwerend KQL** do wnioskowania o Twoim oprogramowaniu w LAB-ie Elastic-only.
+Zakładamy, że pipeline indeksuje zdarzenia do Elasticsearch w indeksie (domyślnie): `sbom-test` i że w Kibanie masz data view `sbom-test*` z polem czasu `@timestamp`.
 
-Kwerendy są ułożone tak, aby:
-- najpierw potwierdzić tożsamość bytu (AID),
-- potem sprawdzić skład (SBOM),
-- potem ryzyko (SCAN),
-- potem zmianę (DELTA),
-- na końcu sterowanie (GATE).
-
-Nie zaczynamy od „czy są CVE”, tylko od: **czy byt istnieje i ma ciąg obserwacji**.
+> Źródło danych: zdarzenia z pipeline (`event_type: sbom_snapshot | sbom | scan | delta | gate`) z polami `aid.*` oraz `payload.*`.
 
 ---
 
-## Warunek wstępny (1 minuta)
+## 1) Pre-flight: ustawienia w Kibanie
 
-### Data View
-- index pattern: `sbom-*` (lub `sbom-test`)
-- time field: `@timestamp`
-- po pierwszym ingest: **Refresh field list**
+### 1.1 Data view (konieczne)
+**Stack Management → Data Views → Create data view**
+- Name / pattern: `sbom-test*`
+- Time field: `@timestamp`
+- Save
 
-Jeśli nie widzisz `aid.*` i `event_type`, najpierw to napraw.
+Po zmianach mapowania pól: **Refresh field list**.
+
+### 1.2 Okno czasu (częsta przyczyna „nie widzę danych”)
+W Discover ustaw na start:
+- **Last 24 hours** (albo Last 7 days)
+- Dopiero potem schodź do Last 15 minutes
+
+> Różnica: ES `_count` może pokazywać 6, a Discover 5 — zwykle 1 dokument jest poza oknem czasu.
 
 ---
 
-## 0) Sanity check: „czy LAB w ogóle ma dane?”
+## 2) Słownik pól (co masz w dokumentach)
 
+### 2.1 Pola tożsamości (AID)
+- `aid.app_id`
+- `aid.env`
+- `aid.owner_team`
+- `aid.repo`
+- `aid.vcs_ref`
+- `aid.app_version`
+
+### 2.2 Typ zdarzenia
+- `event_type` ∈ `sbom_snapshot`, `sbom`, `scan`, `delta`, `gate`
+
+### 2.3 Najważniejsze pola payload (summary-first)
+**gate**
+- `payload.decision` ∈ `GO`, `STOP`
+- `payload.reason`
+- `payload.policy.fail_on` ∈ `none`, `critical`, `high`
+- `payload.summary.critical` (liczba)
+- `payload.summary.high` (liczba)
+
+**scan**
+- `payload.summary.critical`
+- `payload.summary.high`
+- (opcjonalnie, gdy `FULL_PAYLOAD=true`): `payload.scan` (duży obiekt)
+
+**delta**
+- `payload.summary.added` (liczba)
+- `payload.summary.removed` (liczba)
+- (opcjonalnie) `payload.added[]`, `payload.removed[]` — jeśli utrzymujesz pełną listę w delta.json
+
+**sbom_snapshot**
+- `payload.components_snapshot[]` — tablica stringów (może być pusta)
+  - przy pustej tablicy pole często **nie istnieje** w indeksie (ES nie indeksuje pustych wartości)
+
+**sbom**
+- przy `FULL_PAYLOAD=false`: `payload.summary.mode=summary_only`
+- przy `FULL_PAYLOAD=true`: `payload.sbom` (duży obiekt)
+
+---
+
+## 3) Discover: KQL — szybki zestaw zapytań
+
+### 3.1 „Czy w ogóle coś wpływa?”
 ```kql
-event_type : *
-````
+_index : "sbom-test"
+```
 
-Oczekujesz dokumentów w Discover. Jeśli pusto: pipeline nie ingeruje lub indeks inny.
-
----
-
-## 1) Byt i genealogia (AID)
-
-### 1.1. Wszystkie zdarzenia jednego bytu (najważniejsze)
-
+### 3.2 Wszystko dla konkretnego repo i środowiska
 ```kql
 aid.repo : "DonkeyJJLove/sbom" and aid.env : "lab"
 ```
 
-To jest filtr bazowy do całego LAB-u.
-
-### 1.2. Jeden byt po app_id
-
+### 3.3 Tylko zdarzenia gate (decyzje)
 ```kql
-aid.app_id : "sbom" and aid.env : "lab"
+event_type : gate
 ```
 
-### 1.3. Konkretna wersja/commit (genealogia)
-
+### 3.4 Gate: tylko STOP (blokady)
 ```kql
-aid.repo : "DonkeyJJLove/sbom" and aid.vcs_ref : "a1b2c3d"
+event_type : gate and payload.decision : "STOP"
 ```
 
-W praktyce `a1b2c3d` bierzesz z pola `aid.vcs_ref` w ostatnim buildzie.
-
-### 1.4. Sprawdzenie „czy to jest ciąg w czasie”
-
+### 3.5 Gate: polityka HIGH (fail_on=high)
 ```kql
-aid.repo : "DonkeyJJLove/sbom" and event_type : "gate"
+event_type : gate and payload.policy.fail_on : "high"
 ```
 
-Jeśli widzisz sekwencję gate w czasie, masz stabilny strumień obserwacji.
+### 3.6 Scan: gdzie są jakiekolwiek krytyczne
+```kql
+event_type : scan and payload.summary.critical >= 1
+```
+
+### 3.7 Scan: high lub critical > 0
+```kql
+event_type : scan and (payload.summary.critical >= 1 or payload.summary.high >= 1)
+```
+
+### 3.8 Delta: były zmiany komponentów
+```kql
+event_type : delta and (payload.summary.added >= 1 or payload.summary.removed >= 1)
+```
+
+### 3.9 Snapshot: niepusty snapshot komponentów (tylko gdy array ma wartości)
+```kql
+event_type : sbom_snapshot and payload.components_snapshot : *
+```
+
+### 3.10 SBOM: tylko wpisy summary-only
+```kql
+event_type : sbom and payload.summary.mode : "summary_only"
+```
+
+### 3.11 Najnowszy przebieg „kompletny” (pakiet 5 zdarzeń w jednym czasie)
+W praktyce wszystkie 5 eventów ma bardzo zbliżony timestamp. Użyj:
+```kql
+aid.repo : "DonkeyJJLove/sbom" and aid.env : "lab"
+```
+i posortuj po `@timestamp desc`, a potem filtruj w tabeli po `event_type`.
 
 ---
 
-## 2) Skład (SBOM)
+## 4) Workflow triage: „co się stało w ostatnim buildzie?”
 
-### 2.1. Wszystkie zdarzenia SBOM
-
+### 4.1 Najpierw gate
+KQL:
 ```kql
-event_type : "sbom" and aid.repo : "DonkeyJJLove/sbom"
+aid.repo : "DonkeyJJLove/sbom" and event_type : gate
 ```
+Dodaj kolumny:
+- `payload.decision`
+- `payload.reason`
+- `payload.policy.fail_on`
+- `payload.summary.critical`
+- `payload.summary.high`
 
 Interpretacja:
+- `decision=STOP` → pipeline zakończy się błędem (exit 10)
+- `fail_on=high` → STOP gdy `high>0` lub `critical>0`
+- `fail_on=critical` → STOP tylko gdy `critical>0`
 
-* jeśli SBOM jest „summary_only”, zobaczysz tylko `payload.summary.note`
-* jeśli `FULL_PAYLOAD=true`, zobaczysz `payload.sbom`
-
-### 2.2. Snapshot komponentów (pod deltę)
-
+### 4.2 Potem scan (co wygenerowało stop)
+KQL:
 ```kql
-event_type : "sbom_snapshot" and aid.repo : "DonkeyJJLove/sbom"
+aid.repo : "DonkeyJJLove/sbom" and event_type : scan
 ```
 
-Kliknij dokument i zobacz `payload.components_snapshot`.
-To jest Twoja minimalna reprezentacja „świata zależności”.
+Jeśli włączysz `FULL_PAYLOAD=true`, będziesz mieć pełny `payload.scan` (duży). Wtedy w Discover zwykle analizujesz pola z `payload.summary.*`, a szczegóły bierzesz z JSON/Dev Tools.
 
-### 2.3. Pytanie epistemiczne #1: „Czy repo ma w ogóle zależności?”
+### 4.3 Potem delta (czy zmiana w komponentach wystąpiła)
+KQL:
+```kql
+aid.repo : "DonkeyJJLove/sbom" and event_type : delta
+```
 
-W Discover:
-
-* otwórz `sbom_snapshot`
-* sprawdź, czy `payload.components_snapshot` ma >0 elementów
-
-Jeśli 0, wniosek jest ważny: repo może być dokumentacyjne / brak lockfile / brak ekosystemu zależności wykrywalnego przez Syft.
+Dodaj kolumny:
+- `payload.summary.added`
+- `payload.summary.removed`
 
 ---
 
-## 3) Ryzyko (SCAN)
+## 5) Dev Tools (DSL): gotowe zapytania ES
 
-### 3.1. Wszystkie skany
+> W Kibanie: **Dev Tools → Console**
 
-```kql
-event_type : "scan" and aid.repo : "DonkeyJJLove/sbom"
+### 5.1 Ostatnie zdarzenia dla repo (downstream do debug)
+```http
+GET sbom-test/_search
+{
+  "size": 50,
+  "sort": [{ "@timestamp": "desc" }],
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "aid.repo": "DonkeyJJLove/sbom" } },
+        { "term": { "aid.env": "lab" } }
+      ]
+    }
+  }
+}
 ```
 
-### 3.2. Krytyczne podatności
-
-```kql
-event_type : "scan" and aid.repo : "DonkeyJJLove/sbom" and payload.summary.critical > 0
+### 5.2 Ostatni gate (najważniejszy)
+```http
+GET sbom-test/_search
+{
+  "size": 1,
+  "sort": [{ "@timestamp": "desc" }],
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "event_type": "gate" } },
+        { "term": { "aid.repo": "DonkeyJJLove/sbom" } },
+        { "term": { "aid.env": "lab" } }
+      ]
+    }
+  }
+}
 ```
 
-### 3.3. Wysokie lub krytyczne
-
-```kql
-event_type : "scan" and aid.repo : "DonkeyJJLove/sbom" and (payload.summary.critical > 0 or payload.summary.high > 0)
+### 5.3 Ostatni scan (summary)
+```http
+GET sbom-test/_search
+{
+  "size": 1,
+  "sort": [{ "@timestamp": "desc" }],
+  "_source": ["@timestamp","aid","event_type","payload.summary"],
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "event_type": "scan" } },
+        { "term": { "aid.repo": "DonkeyJJLove/sbom" } },
+        { "term": { "aid.env": "lab" } }
+      ]
+    }
+  }
+}
 ```
 
-### 3.4. Pytanie epistemiczne #2: „Czy ryzyko jest powtarzalne?”
-
-Porównuj dwa kolejne buildy:
-
-* filtruj po `aid.vcs_ref`
-* porównaj `payload.summary.*`
-
-Jeśli ryzyko jest niestabilne bez zmian w bycie, masz błąd pomiaru lub źródeł (np. różna baza CVE).
-
----
-
-## 4) Zmiana (DELTA)
-
-### 4.1. Wszystkie delty
-
-```kql
-event_type : "delta" and aid.repo : "DonkeyJJLove/sbom"
+### 5.4 Ostatnia delta (czy były zmiany)
+```http
+GET sbom-test/_search
+{
+  "size": 1,
+  "sort": [{ "@timestamp": "desc" }],
+  "_source": ["@timestamp","aid","event_type","payload.summary","payload.added","payload.removed"],
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "event_type": "delta" } },
+        { "term": { "aid.repo": "DonkeyJJLove/sbom" } },
+        { "term": { "aid.env": "lab" } }
+      ]
+    }
+  }
+}
 ```
 
-### 4.2. „Nowe komponenty” (added)
-
-```kql
-event_type : "delta" and aid.repo : "DonkeyJJLove/sbom" and payload.summary.added > 0
+### 5.5 Ostatni snapshot komponentów (jeśli niepusty)
+```http
+GET sbom-test/_search
+{
+  "size": 1,
+  "sort": [{ "@timestamp": "desc" }],
+  "_source": ["@timestamp","aid","event_type","payload.components_snapshot"],
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "event_type": "sbom_snapshot" } },
+        { "term": { "aid.repo": "DonkeyJJLove/sbom" } },
+        { "term": { "aid.env": "lab" } }
+      ]
+    }
+  }
+}
 ```
 
-### 4.3. „Ubytek komponentów” (removed)
-
-```kql
-event_type : "delta" and aid.repo : "DonkeyJJLove/sbom" and payload.summary.removed > 0
+### 5.6 Histogram: trend critical/high (scan)
+```http
+GET sbom-test/_search
+{
+  "size": 0,
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "event_type": "scan" } },
+        { "term": { "aid.repo": "DonkeyJJLove/sbom" } },
+        { "term": { "aid.env": "lab" } }
+      ]
+    }
+  },
+  "aggs": {
+    "by_time": {
+      "date_histogram": { "field": "@timestamp", "fixed_interval": "1m" },
+      "aggs": {
+        "crit_max": { "max": { "field": "payload.summary.critical" } },
+        "high_max": { "max": { "field": "payload.summary.high" } }
+      }
+    }
+  }
+}
 ```
 
-### 4.4. Pytanie epistemiczne #3: „Czy delta jest sensowna?”
-
-* delta wymaga wcześniejszego `sbom_snapshot`
-* jeśli `added/removed` jest zawsze 0 mimo zmian w repo, to znaczy, że snapshot jest pusty lub repo nie jest poprawnie skanowane (`TARGET_REF`).
-
----
-
-## 5) Sterowanie (GATE)
-
-### 5.1. Wszystkie decyzje gate
-
-```kql
-event_type : "gate" and aid.repo : "DonkeyJJLove/sbom"
-```
-
-### 5.2. STOP (blokady)
-
-```kql
-event_type : "gate" and aid.repo : "DonkeyJJLove/sbom" and payload.decision : "STOP"
-```
-
-### 5.3. GO (dopuszczenia)
-
-```kql
-event_type : "gate" and aid.repo : "DonkeyJJLove/sbom" and payload.decision : "GO"
-```
-
-### 5.4. Pytanie epistemiczne #4: „Czy próg jest właściwy?”
-
-* porównaj `payload.policy.fail_on`
-* porównaj `payload.summary.critical/high`
-* sprawdź, czy STOP jest „częsty” i czy ma sens (to jest tuning polityki, nie błąd).
-
----
-
-## 6) Diagnostyka typowych anomalii (KQL)
-
-### 6.1. „Widziałem dokumenty manualne/testowe”
-
-```kql
-aid.vcs_ref : "manual" or msg : "*hello*"
-```
-
-Usuń szum, żeby nie mieszać testów z bytem.
-
-### 6.2. „Nie mam delty”
-
-```kql
-event_type : "sbom_snapshot" and aid.repo : "DonkeyJJLove/sbom"
-```
-
-Jeśli brak snapshotów, delta będzie bez sensu.
-
-### 6.3. „Nie widzę pól aid.*”
-
-To nie jest KQL. To jest problem Data View.
-
-* Data View → Refresh field list
-
----
-
-## 7) Minimalny rytuał wnioskowania (kolejność)
-
-1. **Czy byt istnieje?**
-
-```kql
-aid.repo : "DonkeyJJLove/sbom"
-```
-
-2. **Czy jest ciąg obserwacji?**
-
-```kql
-aid.repo : "DonkeyJJLove/sbom" and event_type : "gate"
-```
-
-3. **Czy skład jest niepusty?**
-
-```kql
-aid.repo : "DonkeyJJLove/sbom" and event_type : "sbom_snapshot"
-```
-
-4. **Czy ryzyko istnieje?**
-
-```kql
-aid.repo : "DonkeyJJLove/sbom" and event_type : "scan"
-```
-
-5. **Czy zmiana jest wykrywana?**
-
-```kql
-aid.repo : "DonkeyJJLove/sbom" and event_type : "delta"
-```
-
-6. **Czy decyzje są spójne z ryzykiem?**
-
-```kql
-aid.repo : "DonkeyJJLove/sbom" and event_type : "gate"
+### 5.7 Zdarzenia STOP (gate)
+```http
+GET sbom-test/_search
+{
+  "size": 25,
+  "sort": [{ "@timestamp": "desc" }],
+  "query": {
+    "bool": {
+      "filter": [
+        { "term": { "event_type": "gate" } },
+        { "term": { "payload.decision": "STOP" } }
+      ]
+    }
+  }
+}
 ```
 
 ---
 
-## Status dokumentu
+## 6) Przepisy Lens (wizualizacje, bez „wielkiej filozofii”)
 
-Operacyjny.
-To jest minimalny zestaw kwerend pozwalający przejść z „LAB działa” do „wnioskuję o bycie”.
+### 6.1 „Ryzyko teraz”: ostatni scan (critical/high)
+- Visualization: **Metric** (albo Gauge)
+- Data view: `sbom-test*`
+- KQL filter: `event_type : scan and aid.repo : "DonkeyJJLove/sbom" and aid.env : "lab"`
+- Metric field: `payload.summary.critical` (lub `payload.summary.high`)
+- Time range: Last 24h
+
+### 6.2 „Decyzje gate w czasie”
+- Visualization: **Bar / Line**
+- Filter: `event_type : gate and aid.repo : "DonkeyJJLove/sbom"`
+- Break down by: `payload.decision`
+- X-axis: `@timestamp` date histogram
+
+### 6.3 „Delta zmian komponentów”
+- Filter: `event_type : delta and aid.repo : "DonkeyJJLove/sbom"`
+- Y: `payload.summary.added` (sum albo max) i osobno `payload.summary.removed`
+- X: `@timestamp`
+
+> Jeśli `added/removed` są zawsze 0 (repo bez komponentów), przejdź na `TARGET_KIND=image` i testuj na obrazie kontenera.
 
 ---
 
+## 7) Praktyczne wskazówki (co wyszło w praktyce)
+
+### 7.1 Dlaczegoł „snapshot pusty” przy repo
+To nie jest błąd pipeline, tylko efekt: `syft` nie zawsze wykrywa komponenty w repo, jeśli repo nie ma manifestów zależności.  
+Wtedy delta będzie 0/0. To jest poprawne — ale oznacza, że sensowniejszy test SBOM/Delta uzyskasz dla:
+- `TARGET_KIND=image` (np. obraz aplikacji),
+- lub repo z realnymi manifestami (npm/pip/maven/gradle itp.).
+
+### 7.2 1-node cluster: indeks „yellow”
+Repliki nie mają gdzie się umieścić. Ustaw `number_of_replicas=0` na indeksie (lub w template).
+
+### 7.3 Pola keyword (ważne dla term-query w pipeline)
+Pipeline w fetch używa `term`. Jeśli pola typu `aid.repo`/`event_type` nie są keyword, fetch może nie trafiać w poprzedni snapshot.  
+Dlatego w LAB warto użyć index template z mapowaniem keyword (opis w `03_JENKINS_PIPELINE.md`).
+
+---
+
+## 8) Minimalny „pakiet zapytań” do szybkiego debug (Discover)
+
+1) Wszystko dla repo:
+```kql
+aid.repo : "DonkeyJJLove/sbom" and aid.env : "lab"
+```
+
+2) Ostatnie decyzje gate:
+```kql
+event_type : gate and aid.repo : "DonkeyJJLove/sbom"
+```
+
+3) Tylko STOP:
+```kql
+event_type : gate and payload.decision : "STOP"
+```
+
+4) Scan ryzyka:
+```kql
+event_type : scan and aid.repo : "DonkeyJJLove/sbom"
+```
+
+5) Delta zmian:
+```kql
+event_type : delta and aid.repo : "DonkeyJJLove/sbom"
+```
+
+---
+
+## 9) Co dalej
+W kolejnym kroku możemy:
+- dodać „pakiety” filtrów pod dashboard (Lens) i Alerting,
+- dołożyć widoki: „per repo / per env / per team”,
+- przygotować „wzór indeksu” (template) pod dalsze pola (np. licencje, CVE, komponenty w delcie).
+
+---
+
+## Status
+Dokument operacyjny (LAB Elastic-only) dla strumienia zdarzeń pipeline SBOM.
