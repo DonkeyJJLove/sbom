@@ -1,4 +1,4 @@
-# Pipeline SBOM i analiza aplikacji z wykorzystaniem Elastic Stack — A\architektura środowiska (Jenkins, “toolbox”, Elasticsearch, Kibana)
+# Pipeline SBOM i analiza aplikacji z wykorzystaniem Elastic Stack — architektura środowiska (Jenkins, “toolbox”, Elasticsearch, Kibana)
 
 W proponowanej architekturze rolę orkiestratora CI/CD pełni Jenkins, który po zbudowaniu aplikacji wykonuje dodatkowe etapy DevSecOps: generowanie SBOM oraz skanowanie bezpieczeństwa. Etapy te mogą być realizowane wewnątrz kontenera narzędziowego (tzw. toolbox), zawierającego m.in. narzędzia do SBOM i analizy podatności, takie jak Syft (do generowania SBOM) oraz Grype (do skanowania CVE)[1]. Przykładowo pipeline po skompilowaniu aplikacji uruchamia Syft w celu wygenerowania SBOM (np. w formacie CycloneDX JSON z listą zależności), a następnie Grype analizuje ten SBOM pod kątem znanych podatności – np. wykrywa obecność podatnej biblioteki log4j i przypisanych do niej CVE[1].
 
