@@ -203,10 +203,17 @@ Rozwijając dalej platformę w powyższych kierunkach, zbliżamy się do wizji, 
 # Bibliografia: 
 
 [1] [7] [17] [21] Akademia SBOM – kompendium wiedzy teoretycznej o analizie i budowie procesów SBOM.docx
+
 [2] [4] Najprostsza architektura integrująca Jenkins, domenę Windows i Splunk w CI_CD.docx
+
 [3] Architektura pętli procesowej DevSecOps z SBOM i Human-in-the-Loop.docx
+
 [5] [6] [8] [9] [10] [11] [12] [16] [19] SBOM jako _Sigillum Relationis_ – ontologiczna pieczęć relacji w systemach cybernetycznych.docx
+
 [13] [14] [15] [22] SBOM jako strumień danych w architekturze procesowej.docx
+
 [18] DevSecOps z analizą SBOM w CI_CD – fazy wdrożenia i zadania zespołów.docx
+
 [20] Architektura hybrydowego rozwiązania do analizy SBOM w procesie CI_CD.docx
+
 [23] Vulnerability Exploitability eXchange (VEX) - CycloneDX
