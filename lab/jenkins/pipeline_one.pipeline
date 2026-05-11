@@ -90,12 +90,14 @@ pipeline {
           env.AID_APP_VERSION = ver
           echo "AID derived: vcs_ref=${env.AID_VCS_REF}, app_version=${env.AID_APP_VERSION}"
 
-          sh """
-            set -e
-            mkdir -p "$OUT_DIR"
-            echo "AID_VCS_REF=${env.AID_VCS_REF}" > "$OUT_DIR/aid_dynamic.env"
-            echo "AID_APP_VERSION=${env.AID_APP_VERSION}" >> "$OUT_DIR/aid_dynamic.env"
-          """
+          withEnv(["AID_VCS_REF_SAFE=${env.AID_VCS_REF}", "AID_APP_VERSION_SAFE=${env.AID_APP_VERSION}"]) {
+            sh '''
+              set -e
+              mkdir -p "$OUT_DIR"
+              printf '%s\n' "AID_VCS_REF=$AID_VCS_REF_SAFE" > "$OUT_DIR/aid_dynamic.env"
+              printf '%s\n' "AID_APP_VERSION=$AID_APP_VERSION_SAFE" >> "$OUT_DIR/aid_dynamic.env"
+            '''
+          }
         }
       }
     }
