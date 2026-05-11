@@ -15,7 +15,7 @@ x-lab-env: &lab-env
   ES_URL: "http://elasticsearch:9200"
   ES_INDEX: ${ES_INDEX:-sbom-test}
   SPLUNK_HEC_URL: "http://splunk:8088/services/collector/event"
-  SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-00000000-0000-0000-0000-000000000000}
+  SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:?Set SPLUNK_HEC_TOKEN in your environment}
 
 # Elasticsearch env (backend "elastic")
 x-es-env: &es-env
@@ -137,17 +137,17 @@ services:
     hostname: splunk
     environment:
       SPLUNK_START_ARGS: "--accept-license"
-      SPLUNK_PASSWORD: ${SPLUNK_PASSWORD:-ChangeMe_Strong_Password_1!}
+      SPLUNK_PASSWORD: ${SPLUNK_PASSWORD:?Set SPLUNK_PASSWORD in your environment}
       SPLUNK_LICENSE_URI: "Free"
       TZ: Europe/Warsaw
-      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-00000000-0000-0000-0000-000000000000}
+      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:?Set SPLUNK_HEC_TOKEN in your environment}
       SPLUNK_HEC_ENABLE: "true"
       SPLUNK_HEC_SSL: "false"
       SPLUNK_HEC_PORT: "8088"
     ports:
-      - "8000:8000"
-      - "8088:8088"
-      - "8089:8089"
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8088:8088"
+      - "127.0.0.1:8089:8089"
     volumes:
       - splunk_etc:/opt/splunk/etc
       - splunk_var:/opt/splunk/var
