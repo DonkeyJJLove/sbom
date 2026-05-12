@@ -9,7 +9,7 @@ pipeline {
   }
 
   parameters {
-    string(name: 'ES_URL',   defaultValue: 'http://elasticsearch:9200', description: 'Elasticsearch URL (docker network)')
+    choice(name: 'ES_URL', choices: ['http://elasticsearch:9200'], description: 'Approved Elasticsearch URL (fixed)')
     string(name: 'ES_INDEX', defaultValue: 'sbom-test', description: 'Index for LAB events')
 
     choice(name: 'AID_ENV', choices: ['lab','dev','test','prod'], description: 'Environment')
@@ -47,6 +47,20 @@ pipeline {
           command -v jq >/dev/null
           command -v curl >/dev/null
           docker version >/dev/null 2>&1 || true
+        '''
+      }
+    }
+
+
+    stage('Validate ingest destination') {
+      steps {
+        sh '''
+          set -e
+          case "$ES_URL" in
+            http://elasticsearch:9200) ;;
+            *) echo "ES_URL is not allowlisted"; exit 2 ;;
+          esac
+          echo "$ES_INDEX" | grep -Eq '^[a-z0-9._-]+$' || { echo "Invalid ES_INDEX"; exit 2; }
         '''
       }
     }
@@ -90,12 +104,14 @@ pipeline {
           env.AID_APP_VERSION = ver
           echo "AID derived: vcs_ref=${env.AID_VCS_REF}, app_version=${env.AID_APP_VERSION}"
 
-          sh """
-            set -e
-            mkdir -p "$OUT_DIR"
-            echo "AID_VCS_REF=${env.AID_VCS_REF}" > "$OUT_DIR/aid_dynamic.env"
-            echo "AID_APP_VERSION=${env.AID_APP_VERSION}" >> "$OUT_DIR/aid_dynamic.env"
-          """
+          withEnv(["AID_VCS_REF_SAFE=${env.AID_VCS_REF}", "AID_APP_VERSION_SAFE=${env.AID_APP_VERSION}"]) {
+            sh '''
+              set -e
+              mkdir -p "$OUT_DIR"
+              printf '%s\n' "AID_VCS_REF=$AID_VCS_REF_SAFE" > "$OUT_DIR/aid_dynamic.env"
+              printf '%s\n' "AID_APP_VERSION=$AID_APP_VERSION_SAFE" >> "$OUT_DIR/aid_dynamic.env"
+            '''
+          }
         }
       }
     }
