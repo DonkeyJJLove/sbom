@@ -15,7 +15,7 @@ x-lab-env: &lab-env
   ES_URL: "http://elasticsearch:9200"
   ES_INDEX: ${ES_INDEX:-sbom-test}
   SPLUNK_HEC_URL: "http://splunk:8088/services/collector/event"
-  SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-00000000-0000-0000-0000-000000000000}
+  SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:?Set SPLUNK_HEC_TOKEN in env/.env}
 
 # Elasticsearch env (backend "elastic")
 x-es-env: &es-env
@@ -36,7 +36,7 @@ services:
     image: portainer/portainer-ce:latest
     container_name: sbom-lab-portainer
     ports:
-      - "9000:9000"
+      - "127.0.0.1:9000:9000"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - portainer_data:/data
@@ -76,8 +76,8 @@ services:
     environment:
       <<: *lab-env
     ports:
-      - "8080:8080"
-      - "50000:50000"
+      - "127.0.0.1:8080:8080"
+      - "127.0.0.1:50000:50000"
     volumes:
       - jenkins_home:/var/jenkins_home
       - /var/run/docker.sock:/var/run/docker.sock
@@ -95,7 +95,7 @@ services:
     environment:
       <<: *es-env
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     volumes:
       - es_data:/usr/share/elasticsearch/data
     ulimits:
@@ -117,7 +117,7 @@ services:
     environment:
       ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
     ports:
-      - "5601:5601"
+      - "127.0.0.1:5601:5601"
     depends_on:
       elasticsearch:
         condition: service_healthy
@@ -137,17 +137,17 @@ services:
     hostname: splunk
     environment:
       SPLUNK_START_ARGS: "--accept-license"
-      SPLUNK_PASSWORD: ${SPLUNK_PASSWORD:-ChangeMe_Strong_Password_1!}
+      SPLUNK_PASSWORD: ${SPLUNK_PASSWORD:?Set SPLUNK_PASSWORD in env/.env}
       SPLUNK_LICENSE_URI: "Free"
       TZ: Europe/Warsaw
-      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-00000000-0000-0000-0000-000000000000}
+      SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:?Set SPLUNK_HEC_TOKEN in env/.env}
       SPLUNK_HEC_ENABLE: "true"
       SPLUNK_HEC_SSL: "false"
       SPLUNK_HEC_PORT: "8088"
     ports:
-      - "8000:8000"
-      - "8088:8088"
-      - "8089:8089"
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8088:8088"
+      - "127.0.0.1:8089:8089"
     volumes:
       - splunk_etc:/opt/splunk/etc
       - splunk_var:/opt/splunk/var
