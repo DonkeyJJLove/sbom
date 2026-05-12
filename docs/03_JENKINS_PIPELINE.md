@@ -147,11 +147,15 @@ W samym pliku pipeline używamy m.in.:
 
 > Uwaga: Jenkins może wyświetlić komunikat typu „Resume disabled … switching to … low-durability mode”, jeśli w UI wyłączyłeś resume dla uruchomienia. To nie psuje logiki pipeline, tylko zmienia tryb trwałości wykonania.
 
-### 6.3 Definition: Pipeline script from SCM (najlepsze)
+### 6.3 Definition: Pipeline script from SCM (tylko dla zaufanego SCM)
 
 * **Definition:** Pipeline script from SCM
-* SCM: Git (Twoje repo)
+* SCM: Git (**tylko repo/branch zaufany i chroniony**)
 * **Script Path:** `lab/jenkins/pipeline_one.pipeline`
+
+> ⚠️ **Granica zaufania:** ten lab montuje `/var/run/docker.sock`, więc kod pipeline ma uprawnienia do uruchamiania kontenerów na hoście Dockera.
+> Nie uruchamiaj w tym jobie pipeline z niezaufanych PR-ów/forków ani branchy, do których mogą pisać nieuprawnieni użytkownicy.
+> Dla niezaufanego kodu użyj osobnego joba/agera bez dostępu do socketu Dockera albo trzymaj Jenkinsfile w oddzielnym, chronionym repo.
 
 To rozwiązuje problem „posypało się na brakującej klamrze }” — bo nie wklejasz ręcznie długiego kodu do UI.
 

@@ -95,7 +95,7 @@ services:
     environment:
       <<: *es-env
     ports:
-      - "9200:9200"
+      - "127.0.0.1:9200:9200"
     volumes:
       - es_data:/usr/share/elasticsearch/data
     ulimits:
@@ -117,7 +117,7 @@ services:
     environment:
       ELASTICSEARCH_HOSTS: "http://elasticsearch:9200"
     ports:
-      - "5601:5601"
+      - "127.0.0.1:5601:5601"
     depends_on:
       elasticsearch:
         condition: service_healthy
