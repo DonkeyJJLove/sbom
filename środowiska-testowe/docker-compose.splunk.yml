@@ -22,8 +22,8 @@ services:
       SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-00000000-0000-0000-0000-000000000000}
       SPLUNK_HEC_ENABLE: "true"
 
-      # PoC/LAB: HEC po HTTP (łatwiejszy debug). PROD: ustaw true + certy.
-      SPLUNK_HEC_SSL: "false"
+      # PoC/LAB: HEC po HTTPS (domyślnie bezpiecznie). Dla własnych certyfikatów dostosuj konfigurację TLS.
+      SPLUNK_HEC_SSL: "true"
       SPLUNK_HEC_PORT: "8088"
     ports:
       - "8000:8000"   # Splunk Web
@@ -35,7 +35,7 @@ services:
       # aplikacja/konfiguracja SBOM (parsery, sourcetype, dashboardy) — katalog w ścieżce tego compose
       - ./splunk-app-sbom:/opt/splunk/etc/apps/sbom_app:rw
     healthcheck:
-      test: ["CMD", "bash", "-lc", "curl -fsS http://localhost:8088/services/collector/health | grep -q healthy"]
+      test: ["CMD", "bash", "-lc", "curl -kfsS https://localhost:8088/services/collector/health | grep -q healthy"]
       interval: 20s
       timeout: 10s
       retries: 60
@@ -47,7 +47,7 @@ services:
   # - ten blok zakłada, że w bazowym pliku istnieje usługa "jenkins"
   jenkins:
     environment:
-      SPLUNK_HEC_URL: "http://splunk:8088/services/collector/event"
+      SPLUNK_HEC_URL: "https://splunk:8088/services/collector/event"
       SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-00000000-0000-0000-0000-000000000000}
     depends_on:
       splunk:
@@ -56,7 +56,7 @@ services:
   # - ten blok zakłada, że w bazowym pliku istnieje usługa "toolbox"
   toolbox:
     environment:
-      SPLUNK_HEC_URL: "http://splunk:8088/services/collector/event"
+      SPLUNK_HEC_URL: "https://splunk:8088/services/collector/event"
       SPLUNK_HEC_TOKEN: ${SPLUNK_HEC_TOKEN:-00000000-0000-0000-0000-000000000000}
     depends_on:
       splunk:
