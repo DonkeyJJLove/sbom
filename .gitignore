@@ -1,0 +1,34 @@
+# Local environments / IDE
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Secrets / local config
+.env
+.env.*
+!.env.sample
+
+# Python / tooling state
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Build / runtime outputs
+build/
+dist/
+*.log
+
+# Elastic / Splunk / Jenkins local data
+.elasticsearch/
+.kibana/
+.splunk/
+.jenkins/
+data/
+
+# OS
+.DS_Store
+Thumbs.db
