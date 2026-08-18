@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0.0",
+  "repository": {
+    "id": "DonkeyJJLove/sbom",
+    "url": "https://github.com/DonkeyJJLove/sbom",
+    "owner": "DonkeyJJLove",
+    "default_branch": "main",
+    "vcs_ref": null
+  },
+  "cyber_lion": {
+    "tile_id": "provenance.sbom",
+    "roles": ["SupplyChainEvidenceProvider", "ArtifactIdentityProvider", "CompositionIntelligence"],
+    "layers": ["INF", "SEM", "MAND"],
+    "disposition": ["KEEP", "REFINE", "INTEGRATE"]
+  },
+  "capabilities": [
+    "artifact.identify",
+    "sbom.observe",
+    "supply_chain.scan",
+    "artifact.delta",
+    "provenance.emit",
+    "composition.risk_evidence"
+  ],
+  "authority": {
+    "maximum_level": "read",
+    "required_gates": ["cyber-lion.mand"]
+  },
+  "observability": {
+    "logs": ["aid.event", "sbom.event", "scan.event", "delta.event"],
+    "metrics": ["component.count", "delta.count", "finding.count", "provenance.coverage"],
+    "traces": ["source→AID→SBOM/scan→delta→evidence"]
+  },
+  "security": {
+    "trust_boundaries": [
+      "measurement != authority",
+      "legacy gate event name != Cyber-Lion GateApplied",
+      "analytics backend != decision authority",
+      "artifact identity must remain provenance-bound"
+    ]
+  },
+  "epistemic": {
+    "status": "OBSERVED",
+    "confidence": 0.9
+  }
+}
