@@ -1,0 +1,15 @@
+{
+  "schema": "lion.repository-standardization/v1",
+  "repository": "DonkeyJJLove/sbom",
+  "baseline": {
+    "head": "023f90b120950848b5ba82cefc94fdef997995cf",
+    "tree": "4856c77847e444465128061ab3ca873c6bc91a6d"
+  },
+  "global_standard_owner": "DonkeyJJLove/ai_platform:LION/standards/README.md",
+  "rename_map": [],
+  "additional_repairs": [],
+  "unresolved": [],
+  "disposition": "VALIDATE_ONLY",
+  "delete_effect": "NONE",
+  "authority_effect": "NONE"
+}
