@@ -94,6 +94,11 @@
         "currentness": "LOCAL_OWNER"
       },
       {
+        "path": "AID_CONTRACT.md",
+        "class": "CONTRACT",
+        "currentness": "LOCAL_OWNER"
+      },
+      {
         "path": "AI_NATIVE_ROADMAP.md",
         "class": "ROADMAP",
         "currentness": "LOCAL_OWNER"
@@ -104,8 +109,8 @@
         "currentness": "LOCAL_OWNER"
       },
       {
-        "path": "AID_CONTRACT.md",
-        "class": "CONTRACT",
+        "path": "REPOSITORY_STANDARDIZATION_R1.json",
+        "class": "MACHINE_READABLE_ARCHITECTURE",
         "currentness": "LOCAL_OWNER"
       },
       {
@@ -114,8 +119,8 @@
         "currentness": "LOCAL_OWNER"
       },
       {
-        "path": "REPOSITORY_STANDARDIZATION_R1.json",
-        "class": "MACHINE_READABLE_ARCHITECTURE",
+        "path": "reference/artifact_identity_adapter.py",
+        "class": "CONTRACT",
         "currentness": "LOCAL_OWNER"
       }
     ],
