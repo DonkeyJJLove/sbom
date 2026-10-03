@@ -74,12 +74,15 @@
     "semantic_exports": [
       "artifact_identity",
       "supply_chain_provenance",
-      "composition_risk_evidence"
+      "composition_risk_evidence",
+      "artifact_provenance",
+      "lineage_binding"
     ],
     "semantic_imports": [
       "architecture",
       "contracts",
-      "currentness"
+      "currentness",
+      "semantic_relevance"
     ],
     "repository_dependencies": [
       "DonkeyJJLove/ai_platform"
